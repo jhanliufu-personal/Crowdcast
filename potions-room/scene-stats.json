@@ -1,0 +1,29 @@
+{
+  "triangles": 266340,
+  "materialBatches": 26,
+  "materials": 26,
+  "gltfBytes": 32229,
+  "glbBytes": 20463420,
+  "textureDimensions": {
+    "oak": [
+      2048,
+      2048
+    ],
+    "stone": [
+      2048,
+      2048
+    ],
+    "rug": [
+      2048,
+      2048
+    ],
+    "book": [
+      2048,
+      1024
+    ],
+    "label": [
+      512,
+      512
+    ]
+  }
+}
