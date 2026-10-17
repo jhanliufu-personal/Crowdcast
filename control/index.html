@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WorldTinder control room</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #14122b; color: #ecebff; font: 14px/1.4 system-ui, -apple-system, sans-serif; }
+    body { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+    header { display: flex; flex-wrap: wrap; gap: 6px 22px; align-items: baseline; padding: 8px 14px; border-bottom: 1px solid #3b3670; }
+    h1 { font-size: 16px; margin: 0; }
+    a { color: #ffcf5a; }
+    .muted { color: #a29fd0; }
+    main { display: grid; grid-template-columns: minmax(0, 3fr) minmax(380px, 2fr); min-height: 0; }
+    iframe { width: 100%; height: 100%; border: 0; display: block; }
+    #scene { border-right: 1px solid #3b3670; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>WorldTinder control room</h1>
+    <span>Audience: <a id="audience" target="_blank"></a></span>
+    <span class="muted">Left: the headset's scene, live (click it, then V for the headset's own view). Right: players, the spell queue, and the round.</span>
+  </header>
+  <main>
+    <iframe id="scene" title="The headset's scene, live"></iframe>
+    <iframe id="host" title="Players, spell queue, and round"></iframe>
+  </main>
+  <script>
+    // Open as /control/#key=HOST_KEY (the server prints it). The key is passed on in the frames' hashes, so it never
+    // goes to the server in a URL: the host console needs it, and the scene needs it when this isn't the server's machine.
+    const key = new URLSearchParams(location.hash.slice(1)).get('key');
+    const hash = key ? `#key=${encodeURIComponent(key)}` : '';
+    document.getElementById('scene').src = `/${hash}`;
+    document.getElementById('host').src = `/host/${hash}`;
+
+    // Phones need the server's network address, which only the server knows (this page may be open as localhost).
+    fetch('/api/links').then((r) => r.json()).then(({ audience }) => {
+      const link = document.getElementById('audience');
+      link.href = link.textContent = audience;
+    });
+  </script>
+</body>
+</html>

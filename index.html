@@ -24,11 +24,12 @@
     body.viewer .headset-only, body.headset .viewer-only { display: none; }
     #info .dim { color: #999; }
   </style>
+  <!-- three.js r170 is copied into vendor/three (all addons, the small libs) so the scene runs without internet. -->
   <script type="importmap">
     {
       "imports": {
-        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
-        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+        "three": "./vendor/three/build/three.module.js",
+        "three/addons/": "./vendor/three/examples/jsm/"
       }
     }
   </script>
@@ -70,6 +71,7 @@
 
     // ?emulate swaps in Meta's emulated Quest 3 (IWER) so "Enter VR" works on a Mac without a headset.
     // It must be installed before the VR button checks for WebXR support. Never loaded on the real headset.
+    // It's the one thing loaded from the internet (esm.sh); the rest of the scene runs offline.
     let xrDevice = null;
     if (params.has('emulate')) {
       // Same iwer URL that @iwer/devui imports internally, so both share one copy of the runtime.

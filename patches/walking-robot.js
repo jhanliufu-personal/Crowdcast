@@ -1,8 +1,9 @@
 // A robot that walks a loop on the ground floor, ahead of where you start. Come within 2.5 m and it stops,
 // turns to face you and waves; walk away and it carries on.
 //   curl -s -X POST --data-binary @patches/walking-robot.js 'localhost:8000/api/patch?id=walking-robot'
-// Model: RobotExpressive by Tomás Laulhé (quaternius), modified by Don McCurdy, CC0 1.0 (from the three.js examples).
-const gltf = await ctx.load('https://cdn.jsdelivr.net/gh/mrdoob/three.js@r170/examples/models/gltf/RobotExpressive/RobotExpressive.glb');
+// Model: RobotExpressive by Tomás Laulhé (quaternius), modified by Don McCurdy, CC0 1.0 (from the three.js examples,
+// copied into assets/models so it loads offline).
+const gltf = await ctx.load('assets/models/RobotExpressive.glb');
 const robot = gltf.scene;
 robot.scale.setScalar(1.4 / new THREE.Box3().setFromObject(robot).getSize(new THREE.Vector3()).y); // 1.4 m tall
 ctx.root.add(robot);

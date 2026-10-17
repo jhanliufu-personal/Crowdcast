@@ -37,7 +37,7 @@ No build step and no dependencies beyond the standard library (plus `anthropic` 
 
 | File | What it does |
 |---|---|
-| `index.html` | The WebXR scene (Three.js 0.170 from a CDN import map). Loads a glTF room (`library/scene.gltf` by default, or `?scene=path.gltf`), centers it with the floor at y=0, and keeps a set of **editable objects** in the scene graph. Also hosts a chat box that sends text to the server. Every open page joins **live sync** over a WebSocket (`/ws`) and applies the server's edit log; `?mirror` shows the headset's view. |
+| `index.html` | The WebXR scene (Three.js 0.170, vendored in `vendor/three/` and loaded through an import map, so it runs offline). Loads a glTF room (`library/scene.gltf` by default, or `?scene=path.gltf`), centers it with the floor at y=0, and keeps a set of **editable objects** in the scene graph. Also hosts a chat box that sends text to the server. Every open page joins **live sync** over a WebSocket (`/ws`) and applies the server's edit log; `?mirror` shows the headset's view. |
 | `serve.py` | Python standard-library HTTP server. Serves the static files, runs the **scene hub** (the ordered edit log every page applies, patches, the chat box's `POST /api/chat`, the player's live snapshot at `GET /api/state`), and mounts the game server. `--https` generates a self-signed cert into `.certs/` so the Quest can connect over Wi-Fi. |
 | `patches/` | Example patches: named JavaScript snippets sent to every page with `POST /api/patch?id=NAME` (e.g. `walking-robot.js`). |
 | `scene_agent.py` | Turns one chat message plus the current scene state into scene-editing commands using Claude (see [How the LLM edits the scene](#how-the-llm-edits-the-scene)). |
@@ -704,8 +704,8 @@ midnight-egg/
 
 ## Tech stack and setup notes
 
-- **Rendering:** Three.js (0.170) with WebXR, loaded as ES modules from jsDelivr through an import map, so there is no bundler or build step. Addons in use: `GLTFLoader`, `OrbitControls` (desktop look-around), `VRButton`, `RoomEnvironment`.
-- **Testing without a headset:** `?emulate` loads IWER's emulated Meta Quest 3 and its DevUI from esm.sh.
+- **Rendering:** Three.js (0.170) with WebXR, loaded as ES modules through an import map from `vendor/three/` (the build, every addon, and the small addon libs), so there is no bundler or build step and the scene needs no internet. Addons in use: `GLTFLoader`, `OrbitControls` (desktop look-around), `VRButton`, `RoomEnvironment`; patches can load any other addon with `ctx.import()`. Models used by patches live in `assets/models/` (credits in `assets/models/CREDITS.md`).
+- **Testing without a headset:** `?emulate` loads IWER's emulated Meta Quest 3 and its DevUI from esm.sh (the only part that needs internet).
 - **Server:** Python 3.12 standard library (`http.server.ThreadingHTTPServer`), set up with conda (`environment.yml`). The only dependency is `anthropic`, imported lazily so the viewer still works without it. Game updates are pushed with Server-Sent Events from the same `ThreadingHTTPServer` (one thread per open stream, which is fine for a room-sized audience). Scene sync uses a WebSocket, implemented in `serve.py` with just enough of RFC 6455 for JSON text messages, so it needs no extra library.
 - **Validation:** today, JSON-schema tool inputs plus `cleanSpec` in the browser. Once the LLM writes code, `acorn` (in the browser or a small Node helper) would parse it for the allowlist check.
 - **AI:** Claude, through the API (tool use) or the Claude Code CLI; default `claude-opus-5-5` at low effort, configurable per [LLM settings](#current-prototype). The plan is a fast model for spell forging and a stronger model for merge and hatch; ElevenLabs for TTS, sound effects, and speech-to-text.

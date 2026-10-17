@@ -50,6 +50,8 @@ Game server
 -----------
 The game server (game/) handles the other /api/ routes (see game/http_api.py); the audience web app is at
 /audience/ and the host view at /host/. Phones join over the network, so the server listens on every interface.
+/control/ puts the live scene and the host view side by side on the laptop; GET /api/links gives pages the
+audience URL (with this machine's network address).
 
 Patches run code in the pages, so /ws, /api/chat and the scene routes above only answer requests from this
 machine (which includes the Quest over USB with adb reverse), or ones carrying the host key: an X-Host-Key
@@ -342,9 +344,17 @@ def watch_headset(hub):
     They describe whatever is in front of the user: our page while it's in VR, otherwise the Quest's home screen."""
     while True:
         try:
-            log = subprocess.Popen(["adb", "logcat", "-T", "1", "-s", "VrApi:I"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            devices = subprocess.run(["adb", "devices"], capture_output=True, text=True, timeout=10).stdout
         except FileNotFoundError:
             return  # no adb on this machine
+        except subprocess.TimeoutExpired:
+            devices = ""
+        # The same Quest can be listed twice (USB and Wi-Fi), and adb refuses to pick, so name one.
+        serials = [line.split()[0] for line in devices.splitlines()[1:] if line.endswith("\tdevice")]
+        if not serials:
+            time.sleep(5)
+            continue
+        log = subprocess.Popen(["adb", "-s", serials[0], "logcat", "-T", "1", "-s", "VrApi:I"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         for line in log.stdout:
             if "FPS=" not in line:
                 continue
@@ -370,6 +380,7 @@ hub = None  # created in main()
 class Handler(http.server.SimpleHTTPRequestHandler):
     game_api = None  # set in main()
     host_key = None  # set in main()
+    links = {}  # set in main()
     extensions_map = {
         **http.server.SimpleHTTPRequestHandler.extensions_map,
         ".gltf": "model/gltf+json",
@@ -407,6 +418,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.open_websocket(url)
         elif url.path == "/api/state":
             self.send_json(hub.state(include_scene=parse_qs(url.query).get("scene") != ["0"]))
+        elif url.path == "/api/links":
+            self.send_json(self.links)
         elif url.path.startswith("/api/"):
             if not self.game_api.handle(self, "GET"):
                 self.send_error(404)
@@ -563,6 +576,8 @@ def main():
     base = f"{'https' if args.https else 'http'}://{ip}:{port}"
     print(f"Audience: {base}/audience/   (phones on the same network{'' if args.https else '; WebXR still needs HTTPS or localhost'})")
     print(f"Host:     {base}/host/#key={host_key}   (roster, live queue, start / reset)")
+    print(f"Control:  http://localhost:{port}/control/#key={host_key}   (the live scene and the host view side by side)")
+    Handler.links = {"audience": f"{base}/audience/"}
     print(f"State:    curl -s localhost:{port}/api/state   (game: /api/game/state)")
     print(f"Scene:    {len(hub.ops)} edits from scenes/{hub.source}")
     threading.Thread(target=watch_headset, args=(hub,), daemon=True).start()

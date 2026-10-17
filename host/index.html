@@ -135,8 +135,9 @@
     let state = null;
     let events = null;
 
-    function el(tag, props = {}, ...children) {
+    function el(tag, { dataset, ...props } = {}, ...children) {
       const node = Object.assign(document.createElement(tag), props);
+      Object.assign(node.dataset, dataset); // dataset is read-only as a whole; its entries aren't
       for (const c of children) if (c != null) node.append(c);
       return node;
     }
