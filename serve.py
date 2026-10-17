@@ -27,8 +27,8 @@ pages replay the log when they load. An edit is either
 The log lasts until the server restarts or is reset.
 
 HTTP API, e.g. with curl from this machine:
-  GET    /api/state            latest pose, live scene snapshot from the player, patch names, recent page errors
-                               (?scene=0 skips the snapshot)
+  GET    /api/state            latest pose, live scene snapshot from the player, patch names, recent page errors,
+                               and the Quest's own performance stats if adb can reach it (?scene=0 skips the snapshot)
   POST   /api/patch?id=NAME    body: the patch's JavaScript; replies with whether it ran on the player
   DELETE /api/patch?id=NAME    remove a patch
   POST   /api/commands         body: {"commands": [{"name": "add_object", "input": {...}}, ...]}
@@ -128,6 +128,7 @@ class Hub:
         self.ops = []  # {"seq", "kind": "commands", "commands"} or {"seq", "kind": "patch", "id", "code"}
         self.sockets = []
         self.pose = None
+        self.headset = None  # latest performance stats from the Quest, see watch_headset()
         self.errors = collections.deque(maxlen=30)
         self.pending = {}  # request id -> {"event", "from": the page whose reply counts, "reply"}
 
@@ -233,6 +234,7 @@ class Hub:
             "pose": pose,
             "patches": patches,
             "scene": self.snapshot() if include_scene else None,
+            "headset": self.headset,
             "errors": list(self.errors),
         }
 
@@ -244,6 +246,33 @@ class Hub:
 
 
 hub = Hub()
+
+
+def watch_headset():
+    """Keep the Quest's latest performance stats, which its VR runtime logs once a second, while adb can reach it.
+    They describe whatever is in front of the user: our page while it's in VR, otherwise the Quest's home screen."""
+    while True:
+        try:
+            log = subprocess.Popen(["adb", "logcat", "-T", "1", "-s", "VrApi:I"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        except FileNotFoundError:
+            return  # no adb on this machine
+        for line in log.stdout:
+            if "FPS=" not in line:
+                continue
+            # e.g. "... VrApi : FPS=90/90,Prd=20ms,...,App=0.64ms,...,GPU%=0.16,CPU%=0.20(W0.21),..."
+            fields = dict(f.split("=", 1) for f in line.split(": ", 1)[-1].strip().split(",") if "=" in f)
+            hub.headset = {
+                "time": time.strftime("%H:%M:%S"),
+                "fps": fields.get("FPS"),  # achieved/target
+                "app_gpu_time": fields.get("App"),  # GPU time per frame; the budget is 1000/target fps ms
+                "gpu_utilization": fields.get("GPU%"),  # 0-1, at the current clock level
+                "cpu_utilization": fields.get("CPU%"),
+                "clock_levels_cpu_gpu": fields.get("CPU4/GPU"),  # raised by the Quest under load
+                "stale_frames": fields.get("Stale"),  # frames that weren't ready in time, in the last second
+                "temperature": fields.get("Temp"),
+            }
+        log.wait()
+        time.sleep(5)  # the headset went away; try again
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -402,6 +431,7 @@ def main():
         print(f"Quest: plug in USB, run `adb reverse tcp:{port} tcp:{port}`, then open http://localhost:{port}")
         print("       (or restart with --https to use Wi-Fi)")
     print(f"State: curl -s localhost:{port}/api/state")
+    threading.Thread(target=watch_headset, daemon=True).start()
 
     try:
         server.serve_forever()

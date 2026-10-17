@@ -81,6 +81,10 @@
 
     // Change this to preview a different scene, or pass ?scene=path/to/file.gltf
     const SCENE_URL = params.get('scene') || 'library/scene.gltf';
+    // How much to enlarge a model so that 1 unit = 1 meter, and you're life-sized in it. The library comes in
+    // about 4.5× too small: its shelves are 8 cm apart (real ones are ~35 cm) and its gallery rail is 20 cm tall (~0.9 m).
+    const SCENE_SCALES = { 'library/scene.gltf': 4.5 };
+    const WORLD_SCALE = SCENE_SCALES[SCENE_URL] ?? 1;
     const EYE_HEIGHT = 1.6; // meters, desktop camera only; in VR the headset supplies height
     const MOVE_SPEED = 1.5; // meters per second
     const SNAP_TURN = Math.PI / 6;
@@ -495,6 +499,7 @@
       SCENE_URL,
       (gltf) => {
         const model = gltf.scene;
+        model.scale.setScalar(WORLD_SCALE);
         // Put the floor at y=0 and the room's center at the origin, where the user stands.
         const box = new THREE.Box3().setFromObject(model);
         const center = box.getCenter(new THREE.Vector3());
@@ -689,6 +694,7 @@
     // reloading. Sending one with an existing name removes the old version first. The code runs as the body of an
     // async function (so `await` works) with `THREE` and `ctx` in scope:
     //   ctx.root                 a Group for everything the patch adds; it's removed, and its meshes disposed, with the patch
+    //                            (detach anything sharing geometry or materials with the rest of the scene in onRemove)
     //   ctx.onFrame((dt, t) => …) per-frame logic; t is the player's clock, so mirrors animate in step
     //   ctx.on(target, type, fn) addEventListener that's undone with the patch, e.g. ctx.on(ctx.controllers[0], 'selectstart', …)
     //   ctx.onRemove(fn)         other cleanup, e.g. undoing changes the patch made outside ctx.root
@@ -782,7 +788,15 @@
       return node;
     }
     function snapshot() {
-      return { ...sceneState(), fps: Math.round(fps), presenting: renderer.xr.isPresenting, patches: [...patches.keys()], graph: describe(scene) };
+      const { render, memory } = renderer.info; // the last frame's draw calls and triangles, both eyes included
+      return {
+        ...sceneState(),
+        fps: Math.round(fps),
+        presenting: renderer.xr.isPresenting,
+        rendering: { draw_calls: render.calls, triangles: render.triangles, ...memory },
+        patches: [...patches.keys()],
+        graph: describe(scene),
+      };
     }
     Object.assign(window, { setPatch, removePatch, snapshot });
 

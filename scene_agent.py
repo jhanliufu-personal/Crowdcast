@@ -78,7 +78,7 @@ TOOLS = [
     },
 ]
 
-SYSTEM = """You edit a 3D WebXR scene: a small two-storey library room that the user walks around in, \
+SYSTEM = """You edit a 3D WebXR scene: a life-size two-storey library hall that the user walks around in, \
 on a Mac or in a VR headset. You can only add, change and remove the simple objects listed in the \
 scene state; the room itself can't be edited.
 
