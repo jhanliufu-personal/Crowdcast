@@ -325,6 +325,8 @@ class EngineTest(unittest.TestCase):
         self.assertEqual(self.engine.scores[self.a.team], 10)
         self.assertEqual(self.engine.charge, 3)
         buzz = collect(self.hub, "audience", self.b.id)
+        view = self.engine.host_view()
+        self.assertEqual([(r["id"], r["status"]) for r in view["recent"]], [(hit.id, "hit"), (caught.id, "caught")])
         self.engine.report("return", caught.id)
         self.assertEqual(self.engine.scores[self.b.team], -5)
         self.assertEqual([d["spell"] for e, d in buzz() if e == "audience:buzz"], ["Thunder Lob"])
@@ -380,6 +382,8 @@ class EngineTest(unittest.TestCase):
         view = [d for e, d in host() if e == "host:view"][-1]
         self.assertEqual([r["id"] for r in view["ready"]], [preset.id])
         self.assertEqual([(r["id"], r["status"], r["lease"]["attempt"]) for r in view["queue"]], [(novel.id, "forging", 1)])
+        self.assertEqual(view["queue"][0]["lease"]["seconds"], LEASE_SECONDS[Tier.NOVEL])
+        self.assertEqual(view["ready"][0]["spell"]["asset"]["emoji"], "🔥")  # full spell, for the player view
 
 
 if __name__ == "__main__":

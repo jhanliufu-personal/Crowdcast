@@ -27,7 +27,8 @@ You are a young wizard on top of a castle tower, guarding a magical egg until mi
 12. [Project structure](#project-structure)
 13. [Tech stack and setup notes](#tech-stack-and-setup-notes)
 14. [MVP vs stretch goals](#mvp-vs-stretch-goals)
-15. [Demo script](#demo-script)
+15. [Running the demo in one room](#running-the-demo-in-one-room)
+16. [Demo script](#demo-script)
 
 ---
 
@@ -38,12 +39,13 @@ No build step and no dependencies beyond the standard library (plus `anthropic` 
 | File | What it does |
 |---|---|
 | `index.html` | The WebXR scene (Three.js 0.170, vendored in `vendor/three/` and loaded through an import map, so it runs offline). Loads a glTF room (`library/scene.gltf` by default, or `?scene=path.gltf`), centers it with the floor at y=0, and keeps a set of **editable objects** in the scene graph. Also hosts a chat box that sends text to the server. Every open page joins **live sync** over a WebSocket (`/ws`) and applies the server's edit log; `?mirror` shows the headset's view. |
-| `serve.py` | Python standard-library HTTP server. Serves the static files, runs the **scene hub** (the ordered edit log every page applies, patches, the chat box's `POST /api/chat`, the player's live snapshot at `GET /api/state`), and mounts the game server. `--https` generates a self-signed cert into `.certs/` so the Quest can connect over Wi-Fi. |
+| `serve.py` | Python standard-library HTTP server. Serves the static files, runs the **scene hub** (the ordered edit log every page applies, patches, the chat box's `POST /api/chat`, the player's live snapshot at `GET /api/state`), and mounts the game server. Always serves HTTP on port 8000; `--https` adds an HTTPS listener on 8443 (self-signed cert in `.certs/`, regenerated when the address changes) for the Quest over Wi-Fi. Works out the address phones should use (in WSL2, Windows' Wi-Fi address) and prints any setup still missing; see [Running the demo in one room](#running-the-demo-in-one-room). |
 | `patches/` | Example patches: named JavaScript snippets sent to every page with `POST /api/patch?id=NAME` (e.g. `walking-robot.js`). |
 | `scene_agent.py` | Turns one chat message plus the current scene state into scene-editing commands using Claude (see [How the LLM edits the scene](#how-the-llm-edits-the-scene)). |
 | `game/` | The game server: audience members and teams, structured spell requests, the priority request queue, the round (acts, clock, cracks, charge, scores), and the HTTP + Server-Sent Events API. Mounted by `serve.py`. |
 | `audience/index.html` | The audience web app for phones, served at `/audience/`. |
-| `host/index.html` | The host console at `/host/`: roster of everyone who joined (and who is connected), the live queue in serving order (including requests a forge is working on, with their attempt and time left), what is ready and in the sky (sent, or confirmed in the scene by the headset), and Start / Reset round. |
+| `join/index.html` | The join screen for the projector, at `/join/`: a QR code of the phones' address and a live count of who has joined. |
+| `host/index.html` | The host console at `/host/`: the queue as a "cauldron line" of orbs (one per request: its emoji, the caster's team color, a tier badge, and a countdown ring while a forge brews it), what is ready and in the sky, the roster of everyone who joined (and who is connected), Start / Reset round, and a **player's view** (see below). |
 | `shared/catalog.json` | The ready-made building blocks: assets, motions, and preset spells. |
 
 **What works today**
@@ -65,14 +67,16 @@ No build step and no dependencies beyond the standard library (plus `anthropic` 
 conda env create -f environment.yml   # Python 3.12 + the anthropic package
 conda activate worldtinder
 export ANTHROPIC_API_KEY=...           # optional, see backends below
-python serve.py                        # http://localhost:8000
-python serve.py --https                # https://<lan-ip>:8443 for the Quest over Wi-Fi
+python serve.py                        # http://localhost:8000 (phones: http://<lan-ip>:8000/audience/)
+python serve.py --https                # also https://<lan-ip>:8443 for the Quest over Wi-Fi
 python -m unittest discover tests      # game logic tests
 ```
 
-The server prints the audience URL (`/audience/`) and the host console URL (`/host/#key=<key>`). The host key comes from `WORLDTINDER_HOST_KEY`, or is randomly generated at each start; host and headset API calls need it. The host doesn't cast spells; the console only watches and runs the round. It updates when something changes (pushed at most every 0.25 s), not on a timer.
+The server prints every address you need: the phones' join URL, the join screen with the QR code (`/join/`), the host console (`/host/#key=<key>`), and `/control/#key=<key>` (the live scene and the host console side by side). To run it for a room full of people, see [Running the demo in one room](#running-the-demo-in-one-room). The host key comes from `WORLDTINDER_HOST_KEY`, or is randomly generated at each start; host and headset API calls need it. The host doesn't cast spells; the console only watches and runs the round. It updates when something changes (pushed at most every 0.25 s), not on a timer.
 
-The server listens on every network interface so phones can join. Patches run code in the pages, so the scene routes (`/ws`, `GET /api/state`, `/api/chat`, `/api/patch`, `/api/commands`, `/api/reload`, `/api/reset`) only answer requests from the Mac itself, or ones carrying the host key. On the Quest over Wi-Fi, open the scene as `https://<lan-ip>:8443/#key=<host key>` (the server prints this URL); the page sends the key with its WebSocket and chat requests.
+The **player's view** at the bottom of the host console is a 2D stand-in for the headset, meant for the audience to watch (it has a Full screen button, which also hides the address bar and its host key). It draws the tower at night, the egg with its cracks and charge glow, online casters on broomsticks, and every spell sent to the player: it channels at its caster with the incantation in a speech bubble, flies in with its motion (straight, homing, zigzag, spiral, lob, boomerang), circles the egg until the headset reports an outcome, then plays it (crack, catch into an orb, shield, fizzle). The server doesn't know where spells are (the headset owns the simulation), so the paths are animated in the browser from each spell's motion, speed and channel time.
+
+The server listens on every network interface so phones can join. Patches run code in the pages, so the scene routes (`/ws`, `GET /api/state`, `/api/chat`, `/api/patch`, `/api/commands`, `/api/reload`, `/api/reset`) only answer requests from the Mac itself, or ones carrying the host key. (Phones reaching WSL through a Windows port forward arrive from Windows' address, not localhost, so they aren't trusted either.) On the Quest over Wi-Fi, open the scene as `https://<lan-ip>:8443/#key=<host key>` (the server prints this URL); the page sends the key with its WebSocket and chat requests.
 
 Without `--https`, the Quest can still reach the server over USB with `adb reverse tcp:8000 tcp:8000` and then `http://localhost:8000` (WebXR needs localhost or HTTPS). Over `adb reverse` its requests arrive from localhost, so it needs no key.
 
@@ -602,6 +606,7 @@ Game requests:
 | Request | Auth | Body → response |
 |---|---|---|
 | `GET /api/catalog` | — | → `shared/catalog.json` |
+| `GET /api/join-info` | — | → `{ audience_url }`, the address phones should open (the join screen turns it into a QR code) |
 | `GET /api/game/state` | — | → game state: `phase`, `remaining_s`, `cracks`, `charge`, `scores`, `teams`, `queue` counts per tier, `ready`, `in_flight` spells, `orbs`, `forge_online` |
 | `POST /api/join` | — | `{ name }` → `{ token, member, requests, cooldown_s }` |
 | `GET /api/me` | `X-Token` | → `{ member, requests, cooldown_s }` |
@@ -609,7 +614,7 @@ Game requests:
 | `GET /api/events?role=…` | `token` query param for `audience`, `key` for `host` | SSE stream for `audience`, `headset`, `spectator`, or `host` |
 | `POST /api/headset/event` | `X-Host-Key` | `{ type: "spawned" \| "hit" \| "catch" \| "shield" \| "return", spell_id, target_member_id? }` → game state. `spawned` confirms a `spell:cast` arrived in the scene. |
 | `POST /api/admin/start`, `/api/admin/reset` | `X-Host-Key` | → game state |
-| `GET /api/admin/view` | `X-Host-Key` | → `{ roster, queue, ready, in_flight }`, the same as `host:view` |
+| `GET /api/admin/view` | `X-Host-Key` | → `{ roster, queue, ready, in_flight, recent }`, the same as `host:view` |
 
 | SSE event | To | Payload |
 |---|---|---|
@@ -619,7 +624,7 @@ Game requests:
 | `spell:cast` | headset, spectator | full spell: `id`, `name`, `incantation`, `power`, `channel_ms`, `asset`, `motion`, `caster`. Sent again on headset connect until confirmed with `spawned`. |
 | `audience:buzz` | the member a spell was returned at | `{ spell, incantation, penalty }` |
 | `game:over` | all | `{ outcome: "hatched" \| "broken", charge, caught, scores, winners }` |
-| `host:view` | host, on connect and whenever it changes | `roster` (name, team, online, casts, hits, latest request) and the requests in `queue` (serving order, with `ahead`; claimed ones have `status: "forging"` and `lease: { attempt, seconds_left }`), `ready`, `in_flight` (`sent` or `cast`), each with its `caster` |
+| `host:view` | host, on connect and whenever it changes | `roster` (name, team, online, casts, hits, latest request) and the requests in `queue` (serving order, with `ahead`; claimed ones have `status: "forging"` and `lease: { attempt, seconds_left, seconds }`), `ready` and `in_flight` (`sent` or `cast`; both with the full `spell`), each with its `caster`; `recent`: `{ id, status }` of the last 20 spells to leave the sky |
 
 All other paths are static files, served with `Cache-Control: no-store` so edits show up on reload.
 
@@ -650,7 +655,7 @@ All other paths are static files, served with `Cache-Control: no-store` so edits
 ```
 WorldTinder/
 ├── index.html          # WebXR scene + chat box (Three.js, no build step)
-├── serve.py            # static server, scene hub (edit log, /ws live sync, patches, /api/chat), mounts game/; optional HTTPS
+├── serve.py            # static server, scene hub (edit log, /ws live sync, patches, /api/chat), mounts game/; LAN address detection, optional HTTPS listener
 ├── scene_agent.py      # chat message + scene state → Claude → commands
 ├── patches/            # example patches for POST /api/patch
 ├── game/
@@ -662,10 +667,13 @@ WorldTinder/
 │   ├── events.py          # fan-out to SSE subscribers
 │   └── http_api.py        # /api/ routes
 ├── audience/index.html # phone web app
-├── host/index.html     # host console: roster, live queue, start / reset
+├── host/index.html     # host console: cauldron line, roster, start / reset, player's view
+├── join/index.html     # projector join screen: QR code, joined count
+├── control/index.html  # the live scene and the host console side by side
 ├── shared/catalog.json # assets, motions, preset spells
 ├── tests/test_game.py  # unittest: tiers, queue order, engine flow
 ├── environment.yml     # conda env: Python 3.12, anthropic
+├── vendor/             # three.js 0.170 and qrcode-generator 1.4.4 (MIT), so the room needs no internet
 ├── library/            # test room: scene.gltf, scene.bin, textures/, license.txt (CC-BY-4.0)
 └── .claude/launch.json # preview config that runs serve.py
 ```
@@ -709,7 +717,7 @@ midnight-egg/
 - **Server:** Python 3.12 standard library (`http.server.ThreadingHTTPServer`), set up with conda (`environment.yml`). The only dependency is `anthropic`, imported lazily so the viewer still works without it. Game updates are pushed with Server-Sent Events from the same `ThreadingHTTPServer` (one thread per open stream, which is fine for a room-sized audience). Scene sync uses a WebSocket, implemented in `serve.py` with just enough of RFC 6455 for JSON text messages, so it needs no extra library.
 - **Validation:** today, JSON-schema tool inputs plus `cleanSpec` in the browser. Once the LLM writes code, `acorn` (in the browser or a small Node helper) would parse it for the allowlist check.
 - **AI:** Claude, through the API (tool use) or the Claude Code CLI; default `claude-opus-5-5` at low effort, configurable per [LLM settings](#current-prototype). The plan is a fast model for spell forging and a stronger model for merge and hatch; ElevenLabs for TTS, sound effects, and speech-to-text.
-- **HTTPS is required** off localhost: the Quest browser only allows WebXR and microphone access on secure origins. `python serve.py --https` creates a self-signed certificate (accept the warning in the headset); alternatively use `adb reverse` over USB, or a tunnel (e.g., `cloudflared` or `ngrok`) so phones can reach the server too.
+- **HTTPS is required** off localhost: the Quest browser only allows WebXR and microphone access on secure origins. `python serve.py --https` creates a self-signed certificate (accept the warning in the headset); alternatively use `adb reverse` over USB, or a tunnel through the public door (`--public-port`, see below) when the Wi-Fi keeps devices apart. Phones don't need HTTPS: the audience app uses no secure-context features.
 - **Input:** controllers are the safest for flick detection (velocity of the wand tip); hand tracking is a stretch goal. Haptic pulses on catch and shield. Today controllers only show a pointer line, spawn a book on trigger, and drive movement and snap turning with the sticks.
 - **API keys** stay on the server only; clients never call the LLM or ElevenLabs directly. (True today: the browser only talks to this server, through `/api/chat`, `/ws`, and the game routes.)
 
@@ -733,6 +741,72 @@ midnight-egg/
 | Stretch | Atmosphere changes between acts (director) |
 | Stretch | Audience-voted creature bosses during the Storm act |
 | Stretch | Helper spells, hand tracking, "Most Magical Spell" award |
+
+---
+
+## Running the demo in one room
+
+*Built.* Everything runs on **one laptop**; phones, the Quest, and the projector connect to it over the room's Wi-Fi. Nothing is hosted online.
+
+```
+                 room Wi-Fi (one network)
+   phones ──────────▶ http://<laptop>:8000/audience/     audience app
+   projector ───────▶ http://localhost:8000/join/       QR code + joined count (on the laptop)
+   host ────────────▶ http://localhost:8000/host/#key=… roster, queue, start / reset (on the laptop)
+   Quest ───────────▶ https://<laptop>:8443/#key=…      the scene (self-signed certificate)
+```
+
+Phones use plain HTTP, so nobody in the audience sees a certificate warning: the audience app needs no secure context. Only the Quest needs HTTPS, for WebXR. Both listeners run in the same process and share one game.
+
+**Internet:** the scene, the audience app, the join screen and the host console are fully local; Three.js and the QR code library are vendored in `vendor/`. Only LLM calls (Claude) and `?emulate` need the laptop to have internet.
+
+### 1. The network
+
+- **Use a network you control:** a travel router, or a phone hotspot for small groups. Venue and guest Wi-Fi often turns on *client isolation*, which stops phones from reaching the laptop even though both are "on the Wi-Fi". This is the most common failure.
+- Phone hotspots usually cap connected devices at about 5–10; for a bigger audience use a router.
+- The laptop, the Quest, and every phone must be on the same network.
+
+### 2. The laptop
+
+**macOS:** the first time, allow Python to accept incoming connections when macOS asks (or in System Settings → Network → Firewall). Keep the laptop awake during the demo, e.g. run `caffeinate -d` in another terminal.
+
+**Windows with WSL2:** by default WSL2 is behind NAT: phones can reach Windows but not WSL. `serve.py` detects this, asks Windows for its Wi-Fi address (a few seconds at startup), and prints any commands still needed. Pick one:
+
+- *Mirrored networking (recommended; Windows 11 22H2 or newer).* WSL then shares Windows' address and nothing needs forwarding. In `%UserProfile%\.wslconfig`:
+  ```ini
+  [wsl2]
+  networkingMode=mirrored
+  ```
+  Then run `wsl --shutdown` and, once, in an administrator PowerShell, allow incoming connections to WSL:
+  ```powershell
+  New-NetFirewallHyperVRule -Name WorldTinder -DisplayName WorldTinder -Direction Inbound -VMCreatorId '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -Protocol TCP -LocalPorts 8000,8443
+  ```
+- *Port forwarding (NAT mode).* Run the `netsh interface portproxy …` and `New-NetFirewallRule …` commands that `serve.py` prints in an administrator PowerShell. WSL gets a new address when it restarts, so `serve.py` checks the forwarding on every start and prints the commands again if it's out of date.
+
+Keep Windows from sleeping during the demo as well.
+
+**Wrong address in the QR code?** On a laptop with several networks (Wi-Fi plus Ethernet or VPN), the detected address can be the wrong one. Pass the right one: `python serve.py --https --join-host 192.168.1.23` (or set `WORLDTINDER_JOIN_HOST`).
+
+**Devices can't reach each other at all?** Some networks keep devices apart and you can't change that. Then go through a tunnel instead: `python serve.py --public-port 8080 --public-url https://<this machine>.<tailnet>.ts.net:8443` and `tailscale funnel --bg --https=8443 http://127.0.0.1:8080`. Phones then get the tunnel's address in the QR code. Never point a tunnel at port 8000: its requests come from this machine, which port 8000 trusts with the scene routes; the public door doesn't.
+
+### 3. Start and check
+
+```bash
+WORLDTINDER_HOST_KEY=<pick one> python serve.py --https
+```
+
+Before the audience arrives:
+
+1. Open the **join screen** (`http://localhost:8000/join/`) full screen on the projector.
+2. Scan the QR code with your own phone **using mobile data off**, and join. If the page doesn't load, it's the network or firewall (step 1 or 2).
+3. Open the **host console** on the laptop; your phone appears in the roster with a green dot.
+4. Cast a ready-made spell from the phone; it appears in the host console.
+5. On the Quest, open the printed `https://…:8443/#key=…` address and accept the certificate warning (or use USB / Wi-Fi `adb` and `http://localhost:8000`; `serve.py` keeps the Quest's port forwarded).
+
+Notes:
+- The game is in memory: restarting `serve.py` forgets everyone, and phones go back to the join screen automatically.
+- Each phone holds one open connection, which is fine for a room of dozens. Desktop browsers allow only about 6 open connections per server over HTTP/1.1, so when testing with several audience tabs in one browser, more than about 5 tabs will stall; use a few different browsers or phones.
+- Don't put the host console on the projector: its address contains the host key.
 
 ---
 

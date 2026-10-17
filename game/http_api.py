@@ -3,6 +3,7 @@
 serve.py hands every /api/ request except its scene routes (/ws, /api/state, /api/chat, …) to GameAPI.handle().
 
     GET  /api/catalog                  building blocks for the web app's buttons
+    GET  /api/join-info                the URL phones should open (for the join screen's QR code)
     GET  /api/game/state               game state snapshot (serve.py's /api/state is the live scene)
     POST /api/join          {name}     → {token, member, requests, cooldown_s}
     GET  /api/me            (token)    → {member, requests, cooldown_s}
@@ -31,12 +32,14 @@ KEEPALIVE_S = 15
 
 
 class GameAPI:
-    def __init__(self, engine, hub, host_key):
+    def __init__(self, engine, hub, host_key, join_url=None):
         self.engine = engine
         self.hub = hub
         self.host_key = host_key
+        self.join_url = join_url
         self.routes = {
             ("GET", "/api/catalog"): self.catalog,
+            ("GET", "/api/join-info"): self.join_info,
             ("GET", "/api/game/state"): self.state,
             ("POST", "/api/join"): self.join,
             ("GET", "/api/me"): self.me,
@@ -65,6 +68,10 @@ class GameAPI:
 
     def catalog(self, h, q):
         self._json(h, 200, self.engine.catalog.data)
+
+    def join_info(self, h, q):
+        # Fall back to the address this request came in on, which is right when nothing better is known.
+        self._json(h, 200, {"audience_url": self.join_url or f"http://{h.headers.get('Host')}/audience/"})
 
     def state(self, h, q):
         self._json(h, 200, self.engine.state())

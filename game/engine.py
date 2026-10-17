@@ -117,6 +117,7 @@ class GameEngine:
         self.ready = deque()  # resolved spells waiting for room in the sky
         self.in_flight = {}   # id -> request, SENT to the headset or CAST into the scene
         self.orbs = []        # caught spells the player can return
+        self.recent = deque(maxlen=20)  # requests that just left the sky, for the host's player view
         self._last_state_at = -math.inf
 
     # ---- threads -------------------------------------------------------------------------------
@@ -439,8 +440,11 @@ class GameEngine:
         with self._lock:
             online = self.hub.online_members()
 
-            def row(request, ahead=None):
-                return {**request.to_public(ahead=ahead), "caster": self.members[request.member_id].to_public()}
+            def row(request, ahead=None, full_spell=False):
+                out = {**request.to_public(ahead=ahead), "caster": self.members[request.member_id].to_public()}
+                if full_spell:
+                    out["spell"] = request.spell  # asset, motion, timing: what the player view animates
+                return out
 
             roster = []
             for m in sorted(self.members.values(), key=lambda m: m.joined_at):
@@ -457,13 +461,15 @@ class GameEngine:
             for ahead, (request, lease) in enumerate(self.queue.snapshot()):
                 entry = row(request, ahead)
                 if lease:
-                    entry["lease"] = {"attempt": lease.attempt, "seconds_left": round(self._seconds_left(lease), 1)}
+                    entry["lease"] = {"attempt": lease.attempt, "seconds_left": round(self._seconds_left(lease), 1),
+                                      "seconds": LEASE_SECONDS[request.tier]}
                 queue.append(entry)
             return {
                 "roster": roster,
                 "queue": queue,  # claimed requests (status "forging") keep their place until acked
-                "ready": [row(r) for r in self.ready],
-                "in_flight": [row(r) for r in self.in_flight.values()],
+                "ready": [row(r, full_spell=True) for r in self.ready],
+                "in_flight": [row(r, full_spell=True) for r in self.in_flight.values()],
+                "recent": [{"id": r.id, "status": r.status.value} for r in self.recent],
             }
 
     def _publish_state(self, force=False):
@@ -474,6 +480,9 @@ class GameEngine:
             self.hub.publish("game:state", self.state())
 
     def _set_status(self, request, status):
+        in_sky = (Status.SENT, Status.CAST)
+        if request.status in in_sky and status not in in_sky:
+            self.recent.append(request)  # it just left the sky: hit, caught, shielded or fizzled
         request.status = status
         self._publish_request(request)
 
