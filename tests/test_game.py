@@ -13,6 +13,11 @@ from game.spell_request import Recipe, RequestError, SpellRequest, Status, Tier,
 CATALOG = Catalog.load()
 
 
+def catalog_with(**changes):
+    """A copy of the catalog with some top-level settings replaced."""
+    return Catalog({**CATALOG.data, **changes})
+
+
 def ing(kind, block_id):
     return {"type": "ingredient", "kind": kind, "id": block_id}
 
@@ -189,7 +194,8 @@ class EngineTest(unittest.TestCase):
         self.clock = FakeClock()
         self.hub = EventHub()
         self.forge = FakeForge()
-        self.engine = GameEngine(CATALOG, self.hub, self.forge, clock=self.clock)
+        # Every spell at the egg, so tests don't depend on a random target; TargetingTest covers the others.
+        self.engine = GameEngine(catalog_with(targeting={"mode": "egg"}), self.hub, self.forge, clock=self.clock)
         self.a = self.engine.join("Maya")
         self.b = self.engine.join("Theo")
 
@@ -325,6 +331,8 @@ class EngineTest(unittest.TestCase):
         self.assertEqual(self.engine.scores[self.a.team], 10)
         self.assertEqual(self.engine.charge, 3)
         buzz = collect(self.hub, "audience", self.b.id)
+        view = self.engine.host_view()
+        self.assertEqual([(r["id"], r["status"]) for r in view["recent"]], [(hit.id, "hit"), (caught.id, "caught")])
         self.engine.report("return", caught.id)
         self.assertEqual(self.engine.scores[self.b.team], -5)
         self.assertEqual([d["spell"] for e, d in buzz() if e == "audience:buzz"], ["Thunder Lob"])
@@ -380,7 +388,59 @@ class EngineTest(unittest.TestCase):
         view = [d for e, d in host() if e == "host:view"][-1]
         self.assertEqual([r["id"] for r in view["ready"]], [preset.id])
         self.assertEqual([(r["id"], r["status"], r["lease"]["attempt"]) for r in view["queue"]], [(novel.id, "forging", 1)])
+        self.assertEqual(view["queue"][0]["lease"]["seconds"], LEASE_SECONDS[Tier.NOVEL])
+        self.assertEqual(view["ready"][0]["spell"]["asset"]["emoji"], "🔥")  # full spell, for the player view
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TargetingTest(unittest.TestCase):
+    setUp, submit, cast = EngineTest.setUp, EngineTest.submit, EngineTest.cast
+
+    def use(self, mode):
+        self.engine.catalog = catalog_with(targeting={"mode": mode})
+
+    def test_user_hit_costs_hp_then_heals(self):
+        self.use("user")
+        player = CATALOG.player
+        self.engine.start_round()
+        r = self.cast(self.a, ing("spell", "ember-bolt"))
+        self.assertEqual(r.spell["target"], "user")
+        self.engine.report("hit", r.id)
+        self.assertEqual(self.engine.cracks, 0)
+        hp = player["max_hp"] - player["damage_per_power"] * r.spell["power"]
+        self.assertEqual(self.engine.state()["player"]["hp"], hp)
+        self.engine.tick()
+        self.clock.t += 3
+        self.engine.tick()
+        self.assertAlmostEqual(self.engine.player_hp, hp + 3 * player["heal_per_s"])
+        self.clock.t += 1000
+        self.engine.tick()
+        self.assertEqual(self.engine.player_hp, player["max_hp"])  # never above the maximum
+
+    def test_harness_mode_uses_the_forge_choice(self):
+        self.use("harness")
+        novel = self.submit(self.a, text("a sneaky dart"))
+        self.engine.dispatch_next()
+        self.assertTrue(self.forge.jobs[0].ack({**preset_spell(), "target": "user"}))
+        self.assertEqual(novel.spell["target"], "user")
+
+    def test_harness_mode_picks_for_presets(self):
+        self.use("harness")
+        r = self.submit(self.a, ing("spell", "ember-bolt"))
+        self.engine.dispatch_next()
+        self.assertIn(r.spell["target"], ("egg", "user"))
+
+    def test_fixed_mode_overrides_the_forge(self):
+        self.use("egg")
+        novel = self.submit(self.a, text("a sneaky dart"))
+        self.engine.dispatch_next()
+        self.forge.jobs[0].ack({**preset_spell(), "target": "user"})
+        self.assertEqual(novel.spell["target"], "egg")
+
+    def test_invalid_target_is_dropped(self):
+        spell, error = validate_spell({**preset_spell(), "target": "moon"}, CATALOG)
+        self.assertIsNone(error)
+        self.assertNotIn("target", spell)

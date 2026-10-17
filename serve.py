@@ -1,13 +1,18 @@
 """Serve the WebXR scene, keep the headset, the laptop and the scene files in sync, and run the game server.
 
-    python serve.py            # http://localhost:8000 — for the laptop, and the Quest over USB
-    python serve.py --https    # https://<your-mac-ip>:8443 — for opening on the Quest over Wi-Fi
+    python serve.py            # HTTP on port 8000: the laptop, phones, the join screen, the Quest over USB
+    python serve.py --https    # also HTTPS on port 8443, for opening on the Quest over Wi-Fi
 
-WebXR only runs in a "secure context": localhost, or HTTPS. The Mac browser is fine
-over plain HTTP on localhost. The Quest browser either needs HTTPS (a self-signed
-certificate is generated into .certs/ on first use; accept the warning in the
-headset), or a USB cable plus `adb reverse tcp:8000 tcp:8000` so that the Quest's
-http://localhost:8000 reaches this server.
+Phones use plain HTTP (no certificate warning; the audience app needs no secure context).
+WebXR only runs in a "secure context": localhost, or HTTPS. The laptop browser is fine
+over plain HTTP on localhost. The Quest browser either needs the HTTPS listener (a self-signed
+certificate is generated into .certs/; accept the warning in the headset), or a USB cable plus
+`adb reverse tcp:8000 tcp:8000` so that the Quest's http://localhost:8000 reaches this server.
+All listeners share one scene and one game.
+
+The address phones should use is worked out automatically (in WSL2 with NAT networking, by
+asking Windows for its Wi-Fi address, and printing the port forward Windows still needs).
+Override it with --join-host or WORLDTINDER_JOIN_HOST.
 
 Claude work (the chat box's scene edits, the game's REMIX and NOVEL spells) goes through the harness
 (harness/README.md). By default it runs `claude -p` on your Claude subscription; WORLDTINDER_BACKEND=api uses the
@@ -58,9 +63,14 @@ spell becomes a patch ("spell-<id>"), which is "transient": it is never saved to
 Game server
 -----------
 The game server (game/) handles the other /api/ routes (see game/http_api.py); the audience web app is at
-/audience/ and the host view at /host/. Phones join over the network, so the server listens on every interface.
-/control/ puts the live scene and the host view side by side on the laptop; GET /api/links gives pages the
+/audience/, the host view at /host/, and the join screen (a QR code for the projector) at /join/. Phones join
+over the network, so the server listens on every interface. /control/ puts the live scene and the host view side by side on the laptop; GET /api/links gives pages the
 audience URL (with this machine's network address).
+
+To reach phones and the Quest over the internet instead (when the Wi-Fi keeps devices apart), run
+`--public-port 8080 --public-url https://<this machine>.<tailnet>.ts.net:8443` and point a tunnel at port 8080:
+`tailscale funnel --bg --https=8443 http://127.0.0.1:8080`. Never point a tunnel at the main port: its requests
+come from this machine, which the main port trusts with the scene routes; the public door doesn't.
 
 Patches run code in the pages, so /ws, /api/chat and the scene routes above only answer requests from this
 machine (which includes the Quest over USB with adb reverse), or ones carrying the host key: an X-Host-Key
@@ -75,6 +85,7 @@ import functools
 import hashlib
 import hmac
 import http.server
+import ipaddress
 import json
 import os
 import re
@@ -89,7 +100,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from game.catalog import Catalog
+from game.catalog import TARGET_MODES, Catalog
 from game.engine import GameEngine
 from game.events import EventHub
 from game.http_api import GameAPI
@@ -355,18 +366,46 @@ class Hub:
         return {k: self.scene[k] for k in ("room", "user", "shapes", "animations", "objects") if k in self.scene}
 
 
+def adb(*args):
+    """Run an adb command and return its output ("" if it fails); None if there's no adb on this machine."""
+    try:
+        return subprocess.run(["adb", *args], capture_output=True, text=True, timeout=10).stdout
+    except FileNotFoundError:
+        return None
+    except subprocess.TimeoutExpired:
+        return ""
+
+
+def adb_devices():
+    """Serials of the connected, authorized devices. The same Quest can be listed twice (USB and Wi-Fi)."""
+    return [line.split()[0] for line in (adb("devices") or "").splitlines()[1:] if line.endswith("\tdevice")]
+
+
+def keep_quest_forwarded(port):
+    """Keep the Quest's localhost:PORT forwarded to this server (adb reverse), over USB or Wi-Fi. adb drops the
+    forward whenever it re-makes its connection (cable unplugged, Wi-Fi blip, Quest waking up), so check often.
+    It also forgets Wi-Fi devices when its own server restarts, so reconnect any it has listed before."""
+    if adb("version") is None:
+        return
+    wifi = set()  # Wi-Fi serials ("ip:port") seen so far
+    while True:
+        serials = adb_devices()
+        wifi.update(s for s in serials if ":" in s)
+        for serial in wifi - set(serials):
+            adb("connect", serial)
+        for serial in adb_devices():
+            if f"tcp:{port} tcp:{port}" not in adb("-s", serial, "reverse", "--list"):
+                adb("-s", serial, "reverse", f"tcp:{port}", f"tcp:{port}")
+        time.sleep(3)
+
+
 def watch_headset(hub):
     """Keep the Quest's latest performance stats, which its VR runtime logs once a second, while adb can reach it.
     They describe whatever is in front of the user: our page while it's in VR, otherwise the Quest's home screen."""
+    if adb("version") is None:
+        return  # no adb on this machine
     while True:
-        try:
-            devices = subprocess.run(["adb", "devices"], capture_output=True, text=True, timeout=10).stdout
-        except FileNotFoundError:
-            return  # no adb on this machine
-        except subprocess.TimeoutExpired:
-            devices = ""
-        # The same Quest can be listed twice (USB and Wi-Fi), and adb refuses to pick, so name one.
-        serials = [line.split()[0] for line in devices.splitlines()[1:] if line.endswith("\tdevice")]
+        serials = adb_devices()  # adb refuses to pick between two, so name one
         if not serials:
             time.sleep(5)
             continue
@@ -398,6 +437,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     game_api = None  # set in main()
     host_key = None  # set in main()
     links = {}  # set in main()
+    trust_local = True  # requests from this machine get the scene routes without the host key
     extensions_map = {
         **http.server.SimpleHTTPRequestHandler.extensions_map,
         ".gltf": "model/gltf+json",
@@ -422,7 +462,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def scene_allowed(self, url):
         """Scene routes run code in the pages: only this machine (and the Quest over adb reverse), or the host key."""
-        if self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+        if self.trust_local and self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
             return True
         key = self.headers.get("X-Host-Key") or parse_qs(url.query).get("key", [""])[0]
         return bool(self.host_key) and hmac.compare_digest(key.encode(), self.host_key.encode())
@@ -545,6 +585,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(payload)
 
 
+class PublicHandler(Handler):
+    """The public door (--public-port), for a tunnel such as Tailscale Funnel to point at. A tunnel's requests
+    come from this machine, so here they aren't trusted: the scene routes need the host key like any other."""
+
+    trust_local = False
+
+
 def lan_ip():
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         try:
@@ -554,69 +601,181 @@ def lan_ip():
             return "127.0.0.1"
 
 
-def ensure_cert(ip):
-    cert, key = CERT_DIR / "cert.pem", CERT_DIR / "key.pem"
-    if not (cert.exists() and key.exists()):
+def wsl_nat():
+    """True in WSL2 with NAT networking: this machine's address is private to Windows, not on the Wi-Fi."""
+    try:
+        if "microsoft" not in Path("/proc/version").read_text().lower():
+            return False
+    except OSError:
+        return False
+    try:
+        mode = subprocess.run(["wslinfo", "--networking-mode"], capture_output=True, text=True, timeout=5).stdout.strip()
+        if mode:
+            return mode == "nat"
+    except (OSError, subprocess.TimeoutExpired):
+        pass  # older WSL without wslinfo
+    return ipaddress.ip_address(lan_ip()) in ipaddress.ip_network("172.16.0.0/12")
+
+
+POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+WINDOWS_PROBE = """
+$ip = @((Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null -and $_.NetAdapter.Status -eq 'Up' }).IPv4Address.IPAddress)
+$proxy = netsh interface portproxy show v4tov4 | Out-String
+$fw = [bool](Get-NetFirewallRule -DisplayName 'WorldTinder' -ErrorAction SilentlyContinue)
+@{ ips = $ip; proxy = $proxy; firewall = $fw } | ConvertTo-Json -Compress
+"""
+
+
+def windows_network():
+    """From WSL: Windows' Wi-Fi addresses, its port forwards (listen port -> WSL address), and our firewall rule."""
+    try:
+        out = subprocess.run([POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", WINDOWS_PROBE],
+                             capture_output=True, text=True, timeout=20).stdout
+        info = json.loads(out)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    forwards = {int(m[1]): m[2] for m in re.finditer(r"^\s*\S+\s+(\d+)\s+(\S+)\s+\d+\s*$", info.get("proxy") or "", re.M)}
+    return {"ips": [ip for ip in info.get("ips") or [] if ip], "forwards": forwards, "firewall": bool(info.get("firewall"))}
+
+
+def wsl_forwarding_notes(ports):
+    """Work out the Wi-Fi address in WSL NAT mode, and the Windows commands still needed to reach this server."""
+    print("WSL2 with NAT networking: asking Windows for its Wi-Fi address (a few seconds)…")
+    win = windows_network()
+    if not win or not win["ips"]:
+        return None, ["Couldn't ask Windows for its address. Pass --join-host <Windows Wi-Fi IP>."]
+    wsl_ip, notes, fixes = lan_ip(), [], []
+    for port in ports:
+        target = win["forwards"].get(port)
+        if target == wsl_ip:
+            continue
+        verb = "add" if target is None else "set"
+        fixes.append(f"netsh interface portproxy {verb} v4tov4 listenaddress=0.0.0.0 listenport={port} connectaddress={wsl_ip} connectport={port}")
+    if not win["firewall"]:
+        fixes.append(f"New-NetFirewallRule -DisplayName WorldTinder -Direction Inbound -Protocol TCP -LocalPort {','.join(map(str, ports))} -Action Allow")
+    if fixes:
+        notes.append("Phones reach Windows, not WSL. Run this once in an *administrator* PowerShell on Windows")
+        notes.append("(the port forward must be redone whenever WSL restarts and gets a new address):")
+        notes += [f"    {cmd}" for cmd in fixes]
+        notes.append("Or switch WSL to mirrored networking; see \"Running the demo in one room\" in README.md.")
+    return win["ips"][0], notes
+
+
+def ensure_cert(ips):
+    """Self-signed certificate for localhost and these addresses, regenerated when they change (new Wi-Fi)."""
+    cert, key, names = CERT_DIR / "cert.pem", CERT_DIR / "key.pem", CERT_DIR / "addresses.txt"
+    want = ",".join(["DNS:localhost", "IP:127.0.0.1"] + [f"IP:{ip}" for ip in sorted(set(ips))])
+    if not (cert.exists() and key.exists() and names.exists() and names.read_text() == want):
         CERT_DIR.mkdir(exist_ok=True)
         subprocess.run(
             [
                 "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "365",
                 "-keyout", str(key), "-out", str(cert),
                 "-subj", "/CN=worldtinder-local",
-                "-addext", f"subjectAltName=DNS:localhost,IP:127.0.0.1,IP:{ip}",
+                "-addext", f"subjectAltName={want}",
             ],
             check=True,
             capture_output=True,
         )
+        names.write_text(want)
     return cert, key
 
 
 def main():
     global hub, harness
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--https", action="store_true", help="serve over HTTPS with a self-signed cert (for the Quest over Wi-Fi)")
-    parser.add_argument("--port", type=int, help="port (default 8000, or 8443 with --https)")
+    parser.add_argument("--https", action="store_true", help="also serve HTTPS with a self-signed cert (for the Quest over Wi-Fi)")
+    parser.add_argument("--port", type=int, default=8000, help="HTTP port (default 8000)")
+    parser.add_argument("--https-port", type=int, default=8443, help="HTTPS port (default 8443)")
+    parser.add_argument("--join-host", default=os.environ.get("WORLDTINDER_JOIN_HOST"),
+                        help="address phones should use, if the detected one is wrong (e.g. several network interfaces)")
+    parser.add_argument("--public-port", type=int, default=os.environ.get("WORLDTINDER_PUBLIC_PORT"),
+                        help="also listen on 127.0.0.1:PORT as the public door, for a tunnel to point at (e.g. 8080)")
+    parser.add_argument("--public-url", default=os.environ.get("WORLDTINDER_PUBLIC_URL"),
+                        help="the tunnel's public address, given to phones (e.g. https://mac.tailnet.ts.net:8443)")
+    parser.add_argument("--spell-target", choices=TARGET_MODES,
+                        help="what spells fly at: harness (the forge decides), mix (random), egg or user; "
+                             "default: targeting.mode in shared/catalog.json")
     args = parser.parse_args()
 
+    # Phones join the game over the network; the scene routes check scene_allowed() themselves.
+    listeners = [("0.0.0.0", args.port, Handler)]
+    if args.https:
+        listeners.append(("0.0.0.0", args.https_port, Handler))
+    if args.public_port:
+        listeners.append(("127.0.0.1", int(args.public_port), PublicHandler))
+    servers = []
+    for address, port, handler in listeners:  # bind first, so a busy port fails before anything slow happens
+        try:
+            servers.append(http.server.ThreadingHTTPServer((address, port), functools.partial(handler, directory=str(ROOT))))
+        except OSError as err:
+            raise SystemExit(f"Can't listen on port {port}: {err.strerror}. Is another serve.py still running? "
+                             f"Stop it, or pick other ports with --port / --https-port / --public-port.")
+    lan_ports = [args.port] + ([args.https_port] if args.https else [])
+    notes = []
+    join_host = args.join_host
+    if not join_host and wsl_nat():
+        join_host, notes = wsl_forwarding_notes(lan_ports)
+    join_host = join_host or lan_ip()
+    public_url = (args.public_url or "").rstrip("/")
+    join_url = f"{public_url}/audience/" if public_url else f"http://{join_host}:{args.port}/audience/"
+
     hub = Hub()
-    port = args.port or (8443 if args.https else 8000)
-    ip = lan_ip()
     events = EventHub()
     catalog = Catalog.load()
+    if args.spell_target:
+        catalog.targeting["mode"] = args.spell_target
     harness = Harness(hub, catalog)  # the LLM forge for spells, the cast bridge, and the scene-edit queue
     engine = GameEngine(catalog, events, llm_forge=harness.forge)
     engine.start()
     harness.attach(engine)
     host_key = os.environ.get("WORLDTINDER_HOST_KEY") or secrets.token_urlsafe(8)
-    Handler.game_api = GameAPI(engine, events, host_key)
+    Handler.game_api = GameAPI(engine, events, host_key, join_url)
     Handler.host_key = host_key
-    handler = functools.partial(Handler, directory=str(ROOT))
-    # Phones join the game over the network; the scene routes check scene_allowed() themselves.
-    server = http.server.ThreadingHTTPServer(("0.0.0.0", port), handler)
+    Handler.links = {"audience": join_url}
 
     if args.https:
-        cert, key = ensure_cert(ip)
+        cert, key = ensure_cert([join_host, lan_ip()])
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(cert, key)
-        server.socket = ctx.wrap_socket(server.socket, server_side=True)
-        print(f"Viewer:   https://localhost:{port}")
-        print(f"Quest:    https://{ip}:{port}/#key={host_key}   (same Wi-Fi; accept the certificate warning)")
-    else:
-        print(f"Viewer:   http://localhost:{port}")
-        print(f"Quest:    plug in USB, run `adb reverse tcp:{port} tcp:{port}`, then open http://localhost:{port}")
-        print("          (or restart with --https to use Wi-Fi)")
-    base = f"{'https' if args.https else 'http'}://{ip}:{port}"
-    print(f"Audience: {base}/audience/   (phones on the same network{'' if args.https else '; WebXR still needs HTTPS or localhost'})")
-    print(f"Host:     {base}/host/#key={host_key}   (roster, live queue, start / reset)")
-    print(f"Control:  http://localhost:{port}/control/#key={host_key}   (the live scene and the host view side by side)")
-    Handler.links = {"audience": f"{base}/audience/"}
-    print(f"State:    curl -s localhost:{port}/api/state   (game: /api/game/state)")
-    print(f"Scene:    {len(hub.ops)} edits from scenes/{hub.source}")
-    print(f"Harness:  {harness.backend} backend, {harness.pool.slots} slots   (status: curl -s localhost:{port}/api/harness)")
-    threading.Thread(target=watch_headset, args=(hub,), daemon=True).start()
+        # Handshake in the request's thread, not in accept(): a client that stalls mid-handshake (or a browser's
+        # speculative connection) would otherwise hold up every other HTTPS request.
+        servers[1].socket = ctx.wrap_socket(servers[1].socket, server_side=True, do_handshake_on_connect=False)
 
+    local = f"http://localhost:{args.port}"
+    if public_url:
+        quest = f"{public_url}/#key={host_key}"
+    elif args.https:
+        quest = f"https://{join_host}:{args.https_port}/#key={host_key}   (accept the certificate warning)"
+    else:
+        quest = f"{local}/ over USB or Wi-Fi adb (scripts/quest-wireless.sh; kept forwarded), or restart with --https"
+    print()
+    for label, value in [
+        ("Audience (phones)", join_url),
+        ("Join screen with QR", f"{local}/join/   (put this on the projector)"),
+        ("Host console", f"{local}/host/#key={host_key}"),
+        ("Control", f"{local}/control/#key={host_key}   (the live scene and the host view side by side)"),
+        ("Quest", quest),
+        ("Scene on this laptop", f"{local}/"),
+        ("State", f"curl -s localhost:{args.port}/api/state   (game: /api/game/state)"),
+    ] + ([("Public door", f"127.0.0.1:{args.public_port} for a tunnel; there the scene routes need the host key")]
+         if args.public_port else []):
+        print(f"  {label + ':':<22}{value}")
+    print(f"  {'Scene:':<22}{len(hub.ops)} edits from scenes/{hub.source}")
+    print(f"  {'Spell targets:':<22}{catalog.targeting['mode']}   (--spell-target harness | mix | egg | user)")
+    print(f"  {'Harness:':<22}{harness.backend} backend, {harness.pool.slots} slots   (status: curl -s localhost:{args.port}/api/harness)")
+    if notes:
+        print()
+    for line in notes:
+        print(f"  {line}")
+    print()
+    threading.Thread(target=watch_headset, args=(hub,), daemon=True).start()
+    threading.Thread(target=keep_quest_forwarded, args=(args.port,), daemon=True).start()
+
+    for server in servers[1:]:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        server.serve_forever()
+        servers[0].serve_forever()
     except KeyboardInterrupt:
         pass
     finally:

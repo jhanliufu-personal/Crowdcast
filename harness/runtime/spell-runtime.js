@@ -4,12 +4,14 @@
 //
 // A spell patch calls runtime.cast(ctx, def, code). def is the engine's spell plus t0 (the headset clock when the
 // spell appears); code holds the library functions (object builder, behaviors), already checked by
-// harness/codecheck. Only the headset decides outcomes and reports them (ctx.report): sliced = "catch",
-// reached the head = "hit", flew past = "shield" (a stand-in for a dodge until the shield exists).
+// harness/codecheck. def.target says what it flies at: "user" (the head) or "egg" (ctx.egg()). Only the headset
+// decides outcomes and reports them (ctx.report): sliced = "catch", reached its target = "hit", flew past =
+// "shield" (a stand-in for a dodge until the shield exists).
 
 const RULES = /*RULES*/ { deny_members: [], deny_member_pattern: '^$' };
 
 const LAUNCH_DISTANCE = 7;   // m from the head
+const EGG_LAUNCH_DISTANCE = 6; // m from the egg, on the player's side of it
 const BLADE_LENGTH = 0.6;
 const MIN_SWIPE_SPEED = 1.5; // m/s at the blade tip
 const MIN_MOUSE_SPEED = 900; // px/s
@@ -251,14 +253,30 @@ function pathAt(state, age, out) {
 }
 
 const head = new THREE.Vector3();
+const eggCenter = new THREE.Vector3();
 function launch(state) {
   ctx.head.getWorldPosition(head);
   const r = state.random;
-  const dir = FRONT.clone().applyAxisAngle(UP, (r() - 0.5) * 1.2);
-  state.start.copy(head).addScaledVector(dir, LAUNCH_DISTANCE);
-  state.start.y = Math.max(0.5, head.y - 0.4 + r() * 0.8);
-  state.target.copy(head).add(new THREE.Vector3((r() - 0.5) * 0.3, (r() - 0.5) * 0.2, 0));
-  state.flightTime = Math.min(7, Math.max(1.2, LAUNCH_DISTANCE / state.speed));
+  const egg = state.def.target === 'egg' ? ctx.egg?.() : null;
+  state.egg = egg;
+  let distance = LAUNCH_DISTANCE;
+  if (egg) {
+    // It appears between the player and the egg (give or take 60°), so they can step in and slice it.
+    egg.getWorldPosition(eggCenter);
+    const dir = new THREE.Vector3().subVectors(head, eggCenter).setY(0);
+    if (dir.lengthSq() < 0.01) dir.copy(FRONT).negate();
+    dir.normalize().applyAxisAngle(UP, (r() - 0.5) * 2.1);
+    state.start.copy(eggCenter).addScaledVector(dir, EGG_LAUNCH_DISTANCE);
+    state.start.y = eggCenter.y + 0.5 + r() * 1.5;
+    state.target.copy(eggCenter);
+    distance = EGG_LAUNCH_DISTANCE;
+  } else {
+    const dir = FRONT.clone().applyAxisAngle(UP, (r() - 0.5) * 1.2);
+    state.start.copy(head).addScaledVector(dir, LAUNCH_DISTANCE);
+    state.start.y = Math.max(0.5, head.y - 0.4 + r() * 0.8);
+    state.target.copy(head).add(new THREE.Vector3((r() - 0.5) * 0.3, (r() - 0.5) * 0.2, 0));
+  }
+  state.flightTime = Math.min(7, Math.max(1.2, distance / state.speed));
   state.velocity.subVectors(state.target, state.start).divideScalar(state.flightTime);
   state.side.crossVectors(state.velocity, UP).normalize();
   state.spell.direction.copy(state.velocity).normalize();
@@ -276,7 +294,7 @@ function update(state, dt, t) {
   if (state.mixer) state.mixer.update(dt);
 
   // Homing: the target eases toward the head, and the path is re-aimed at it (the path moves smoothly with it).
-  if (state.motion === 'homing' && age > 0 && age < state.flightTime) {
+  if (state.motion === 'homing' && !state.egg && age > 0 && age < state.flightTime) {
     ctx.head.getWorldPosition(head);
     state.target.lerp(head, Math.min(1, dt * 1.5));
     state.velocity.subVectors(state.target, state.start).divideScalar(state.flightTime);
@@ -328,7 +346,14 @@ function update(state, dt, t) {
 
   if (ctx.isViewer || age < 0) return;
   ctx.head.getWorldPosition(head);
-  if (state.body.position.distanceTo(head) < 0.2 + state.size * 0.5) {
+  if (state.egg) {
+    if (state.egg.userData.box.distanceToPoint(state.body.position) < state.size * 0.5) {
+      burst(state);
+      finish(state, 'hit');
+    } else if (age > state.flightTime + 0.6) {
+      finish(state, 'shield');
+    }
+  } else if (state.body.position.distanceTo(head) < 0.2 + state.size * 0.5) {
     finish(state, 'hit');
     flashOpacity = 0.6;
     pulse(null, 1.0, 150);

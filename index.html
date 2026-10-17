@@ -49,7 +49,7 @@
   </div>
 
   <div id="chat">
-    <div id="chat-log"><div class="meta">Ask Claude to edit the scene, e.g. "put three blue spheres in front of me", "make the cube green", "remove the books".</div></div>
+    <div id="chat-log"><div class="meta">Ask Claude to edit the scene, e.g. "put three blue spheres in front of me", "make the spheres green", "remove them".</div></div>
     <form id="chat-form"><input id="chat-input" autocomplete="off" placeholder="Edit the scene…" /></form>
   </div>
 
@@ -90,11 +90,13 @@
     }
 
     // Change this to preview a different scene, or pass ?scene=path/to/file.gltf
-    const SCENE_URL = params.get('scene') || 'library/scene.gltf';
+    const SCENE_URL = params.get('scene') || 'castle-hall/castle-hall.gltf';
     // How much to enlarge a model so that 1 unit = 1 meter, and you're life-sized in it. The library comes in
     // about 4.5× too small: its shelves are 8 cm apart (real ones are ~35 cm) and its gallery rail is 20 cm tall (~0.9 m).
     const SCENE_SCALES = { 'library/scene.gltf': 4.5 };
     const WORLD_SCALE = SCENE_SCALES[SCENE_URL] ?? 1;
+    // Where the user starts, as [x, z] in the model's own meters (the hall's egg is at its center).
+    const SCENE_SPAWNS = { 'castle-hall/castle-hall.gltf': [0, 9] };
     const EYE_HEIGHT = 1.6; // meters, desktop camera only; in VR the headset supplies height
     const MOVE_SPEED = 1.5; // meters per second
     const SNAP_TURN = Math.PI / 6;
@@ -409,6 +411,20 @@
     // For testing edits without the LLM from the console, and seeing exactly what the LLM is sent.
     Object.assign(window, { applyCommands, sceneState });
 
+    // The egg the player guards: the room model's Egg* meshes, or a stand-in above the room's center if it has none.
+    // Spells aimed at the egg fly at egg.position, and hit when they touch egg.userData.box (world space).
+    const egg = new THREE.Object3D();
+    egg.name = 'egg';
+    egg.userData.box = new THREE.Box3();
+    scene.add(egg);
+    function placeEgg(model) {
+      model.updateMatrixWorld(true);
+      const box = egg.userData.box.makeEmpty();
+      model.traverse((o) => { if (o.isMesh && /^egg/i.test(o.name)) box.expandByObject(o); });
+      if (box.isEmpty()) box.setFromCenterAndSize(new THREE.Vector3(0, 1.2, 0), new THREE.Vector3(0.6, 0.8, 0.6));
+      box.getCenter(egg.position);
+    }
+
     const gltfLoader = new GLTFLoader();
     let worldModel = null;
     let worldLoaded;
@@ -428,6 +444,18 @@
         const size = box.getSize(new THREE.Vector3());
         roomSize.copy(size);
         model.name = 'world';
+        placeEgg(model);
+        const spawn = SCENE_SPAWNS[SCENE_URL];
+        if (spawn) {
+          const offset = new THREE.Vector3(spawn[0] * WORLD_SCALE + model.position.x, 0, spawn[1] * WORLD_SCALE + model.position.z);
+          if (renderer.xr.isPresenting) {
+            rig.position.add(offset);
+          } else {
+            camera.position.add(offset);
+            controls.target.add(offset);
+            controls.update();
+          }
+        }
         // Shown in scene snapshots instead of the model's internals.
         model.userData.summary = `${SCENE_URL}, ${size.x.toFixed(2)} × ${size.y.toFixed(2)} × ${size.z.toFixed(2)} m, floor at y=0`;
         worldModel = model;
@@ -443,6 +471,229 @@
         worldLoaded();
       }
     );
+
+    // HUD (headset only): the egg's health and the player's, from the game state. A small glass panel that hangs
+    // just below the line of sight. updateHud(dt) runs every frame (in VR too), easing the bars toward new values.
+    let updateHud = null;
+    if (ROLE === 'headset') {
+      const W = 1024, H = 288;
+      const canvas = document.createElement('canvas');
+      canvas.width = W;
+      canvas.height = H;
+      const g = canvas.getContext('2d');
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.anisotropy = 4;
+      const hud = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.32, 0.32 * H / W),
+        new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false, toneMapped: false }),
+      );
+      hud.name = 'hud';
+      hud.position.set(0, -0.17, -0.6);
+      hud.rotation.x = -0.12; // tilted up a little toward the eyes
+      hud.renderOrder = 1000;
+      camera.add(hud);
+
+      const GOLD = ['#f6e3a6', '#c9a24f', '#8a6a2c'];
+      const game = { eggLeft: 5, eggMax: 5, hp: 100, maxHp: 100 };
+      const shown = { hp: 100, lost: 100, lostHold: 0, eggFlash: 0, pulse: 0 };
+      let dirty = true;
+      let hudSynced = false;
+
+      function roundRect(x, y, w, h, r) {
+        g.beginPath();
+        g.roundRect(x, y, w, h, r);
+      }
+      function eggPath(cx, cy, w, h) {
+        // Narrower at the top, like an egg.
+        g.beginPath();
+        g.moveTo(cx, cy - h / 2);
+        g.bezierCurveTo(cx + w * 0.42, cy - h / 2, cx + w / 2, cy + h * 0.08, cx + w / 2, cy + h * 0.14);
+        g.bezierCurveTo(cx + w / 2, cy + h * 0.38, cx + w * 0.28, cy + h / 2, cx, cy + h / 2);
+        g.bezierCurveTo(cx - w * 0.28, cy + h / 2, cx - w / 2, cy + h * 0.38, cx - w / 2, cy + h * 0.14);
+        g.bezierCurveTo(cx - w / 2, cy + h * 0.08, cx - w * 0.42, cy - h / 2, cx, cy - h / 2);
+        g.closePath();
+      }
+      function drawEgg(cx, cy, w, h, intact, flash) {
+        eggPath(cx, cy, w, h);
+        if (intact) {
+          const shell = g.createRadialGradient(cx - w * 0.18, cy - h * 0.2, 2, cx, cy, h * 0.6);
+          shell.addColorStop(0, '#ffffff');
+          shell.addColorStop(0.55, '#e9ecf6');
+          shell.addColorStop(1, '#a9b6c9');
+          g.fillStyle = shell;
+        } else {
+          g.fillStyle = 'rgba(255, 255, 255, 0.07)';
+        }
+        g.fill();
+        g.lineWidth = 3;
+        g.strokeStyle = intact ? GOLD[1] : 'rgba(201, 162, 79, 0.35)';
+        g.stroke();
+        if (!intact) {
+          // A crack down the empty shell.
+          g.beginPath();
+          g.moveTo(cx - w * 0.05, cy - h * 0.42);
+          g.lineTo(cx + w * 0.12, cy - h * 0.15);
+          g.lineTo(cx - w * 0.1, cy + h * 0.05);
+          g.lineTo(cx + w * 0.08, cy + h * 0.28);
+          g.lineWidth = 3;
+          g.strokeStyle = `rgba(229, 72, 77, ${0.55 + 0.45 * flash})`;
+          g.stroke();
+        }
+        if (flash > 0) {
+          eggPath(cx, cy, w * 1.25, h * 1.25);
+          g.fillStyle = `rgba(255, 90, 80, ${0.35 * flash})`;
+          g.fill();
+        }
+      }
+      function drawHeart(cx, cy, size, beat) {
+        const s = size * (1 + 0.08 * beat);
+        g.beginPath();
+        g.moveTo(cx, cy + s * 0.42);
+        g.bezierCurveTo(cx - s * 0.6, cy, cx - s * 0.55, cy - s * 0.45, cx - s * 0.27, cy - s * 0.45);
+        g.bezierCurveTo(cx - s * 0.1, cy - s * 0.45, cx, cy - s * 0.32, cx, cy - s * 0.22);
+        g.bezierCurveTo(cx, cy - s * 0.32, cx + s * 0.1, cy - s * 0.45, cx + s * 0.27, cy - s * 0.45);
+        g.bezierCurveTo(cx + s * 0.55, cy - s * 0.45, cx + s * 0.6, cy, cx, cy + s * 0.42);
+        const fill = g.createLinearGradient(cx, cy - s / 2, cx, cy + s / 2);
+        fill.addColorStop(0, '#ff7b7b');
+        fill.addColorStop(1, '#c4161c');
+        g.fillStyle = fill;
+        g.fill();
+        g.beginPath();
+        g.ellipse(cx - s * 0.22, cy - s * 0.22, s * 0.09, s * 0.06, -0.6, 0, Math.PI * 2);
+        g.fillStyle = 'rgba(255, 255, 255, 0.6)';
+        g.fill();
+      }
+      // "87/100" with the maximum smaller and dimmer, right-aligned at x.
+      function value(n, max, x, y) {
+        g.textAlign = 'right';
+        g.font = '500 28px system-ui, -apple-system, sans-serif';
+        g.fillStyle = 'rgba(255, 255, 255, 0.55)';
+        g.fillText(`/${max}`, x, y + 4);
+        const w = g.measureText(`/${max}`).width;
+        g.font = '700 44px system-ui, -apple-system, sans-serif';
+        g.fillStyle = '#ffffff';
+        g.fillText(`${n}`, x - w - 4, y);
+      }
+      function label(text, x, y) {
+        g.font = '600 30px system-ui, -apple-system, sans-serif';
+        g.letterSpacing = '6px';
+        g.fillStyle = GOLD[0];
+        g.textBaseline = 'middle';
+        g.textAlign = 'left';
+        g.fillText(text, x, y);
+        g.letterSpacing = '0px';
+      }
+
+      function draw() {
+        g.clearRect(0, 0, W, H);
+        const low = game.hp / game.maxHp < 0.25;
+
+        // Panel: dark glass with a gold rim (red and pulsing when health is low).
+        roundRect(6, 6, W - 12, H - 12, 44);
+        const glass = g.createLinearGradient(0, 0, 0, H);
+        glass.addColorStop(0, 'rgba(34, 27, 44, 0.86)');
+        glass.addColorStop(1, 'rgba(12, 9, 18, 0.86)');
+        g.fillStyle = glass;
+        g.fill();
+        const rim = g.createLinearGradient(0, 0, W, H);
+        GOLD.forEach((c, i) => rim.addColorStop(i / 2, c));
+        g.lineWidth = 4;
+        g.strokeStyle = rim;
+        g.stroke();
+        if (low) {
+          roundRect(6, 6, W - 12, H - 12, 44);
+          g.lineWidth = 8;
+          g.strokeStyle = `rgba(229, 72, 77, ${0.25 + 0.5 * shown.pulse})`;
+          g.stroke();
+        }
+        roundRect(16, 16, W - 32, H - 32, 36);
+        g.lineWidth = 1.5;
+        g.strokeStyle = 'rgba(246, 227, 166, 0.18)';
+        g.stroke();
+        g.beginPath();
+        g.moveTo(64, H / 2);
+        g.lineTo(W - 64, H / 2);
+        g.strokeStyle = 'rgba(246, 227, 166, 0.12)';
+        g.stroke();
+
+        // The egg: one shell per crack it can still take.
+        const row1 = 82;
+        label('EGG', 64, row1);
+        const first = 298, gap = (762 - first) / Math.max(1, game.eggMax - 1); // spans the health bar below
+        for (let i = 0; i < game.eggMax; i++) {
+          const intact = i < game.eggLeft;
+          drawEgg(first + i * gap, row1, 56, 74, intact, i === game.eggLeft ? shown.eggFlash : 0);
+        }
+        value(game.eggLeft, game.eggMax, W - 60, row1);
+
+        // The player: a heart and a rounded bar, with the health just lost fading out behind it.
+        const row2 = 206;
+        label('YOU', 64, row2);
+        drawHeart(214, row2, 62, low ? shown.pulse : 0);
+        const x = 270, w = 520, h = 40, y = row2 - h / 2; // ends at 790, under the last egg
+        roundRect(x, y, w, h, h / 2);
+        g.fillStyle = 'rgba(0, 0, 0, 0.45)';
+        g.fill();
+        g.lineWidth = 2;
+        g.strokeStyle = 'rgba(246, 227, 166, 0.3)';
+        g.stroke();
+        const f = Math.max(0, Math.min(1, shown.hp / game.maxHp));
+        const lost = Math.max(0, Math.min(1, shown.lost / game.maxHp));
+        g.save();
+        roundRect(x + 4, y + 4, w - 8, h - 8, (h - 8) / 2);
+        g.clip();
+        if (lost > f) {
+          g.fillStyle = 'rgba(255, 214, 214, 0.75)';
+          g.fillRect(x + 4, y + 4, (w - 8) * lost, h - 8);
+        }
+        const [top, bottom] = f > 0.5 ? ['#9af0a6', '#2fae5f'] : f > 0.25 ? ['#ffd27a', '#e08a1e'] : ['#ff8a8a', '#cf2a33'];
+        const fill = g.createLinearGradient(0, y, 0, y + h);
+        fill.addColorStop(0, top);
+        fill.addColorStop(1, bottom);
+        g.fillStyle = fill;
+        g.fillRect(x + 4, y + 4, (w - 8) * f, h - 8);
+        g.fillStyle = 'rgba(255, 255, 255, 0.22)'; // gloss on the top half
+        g.fillRect(x + 4, y + 4, (w - 8) * f, (h - 8) / 2);
+        g.restore();
+        value(Math.round(game.hp), game.maxHp, W - 60, row2);
+
+        texture.needsUpdate = true;
+      }
+
+      updateHud = (dt) => {
+        const before = { ...shown };
+        shown.hp += (game.hp - shown.hp) * Math.min(1, dt * 8);
+        if (shown.lost < shown.hp) shown.lost = shown.hp;
+        else if ((shown.lostHold -= dt) <= 0) shown.lost = Math.max(shown.hp, shown.lost - dt * 40);
+        shown.eggFlash = Math.max(0, shown.eggFlash - dt * 1.5);
+        shown.pulse = game.hp / game.maxHp < 0.25 ? 0.5 + 0.5 * Math.sin(performance.now() / 160) : 0;
+        const moving = Math.abs(before.hp - shown.hp) > 0.02 || Math.abs(before.lost - shown.lost) > 0.02
+          || before.eggFlash !== shown.eggFlash || before.pulse !== shown.pulse;
+        if (moving || dirty) {
+          dirty = false;
+          draw();
+        }
+      };
+
+      setInterval(async () => {
+        try {
+          const res = await fetch('/api/game/state');
+          if (!res.ok) return;
+          const state = await res.json();
+          const eggLeft = state.max_cracks - state.cracks;
+          if (eggLeft < game.eggLeft) shown.eggFlash = 1;
+          if (state.player.hp < game.hp - 0.5) shown.lostHold = 0.6; // hold the lost health a moment, then drain it
+          dirty ||= eggLeft !== game.eggLeft || Math.round(state.player.hp) !== Math.round(game.hp);
+          Object.assign(game, { eggLeft, eggMax: state.max_cracks, hp: state.player.hp, maxHp: state.player.max_hp });
+          if (!hudSynced) {
+            hudSynced = true; // the first state: start there, rather than animating down from full health
+            shown.hp = shown.lost = game.hp;
+            shown.eggFlash = 0;
+          }
+        } catch {} // the server is restarting: keep the last values
+      }, 400);
+    }
 
     // Desktop keyboard movement
     const keys = new Set();
@@ -620,6 +871,7 @@
     //   ctx.load(url)            load a glTF/GLB: resolves to { scene, animations, … }
     //   ctx.import(path)         load a three.js addon, e.g. await ctx.import('geometries/TextGeometry.js')
     //   ctx.head                 the user's head, on any page (the camera looks down its -Z)
+    //   ctx.egg()                the egg the player guards: an Object3D at its center, with userData.box (world space)
     //   ctx.isViewer             true on viewers: patches run there too, for looks, but the headset's state wins, so
     //                            skip side effects there (like adding objects or sending edits)
     //   ctx.scene, ctx.camera (what this page renders from), ctx.rig (what locomotion moves), ctx.controllers,
@@ -642,6 +894,7 @@
         THREE, scene, camera, head, rig, controllers, renderer, root: patch.root,
         isViewer: ROLE === 'viewer',
         world: () => worldModel,
+        egg: () => egg,
         onFrame: (fn) => patch.frame.push(fn),
         onRemove: (fn) => patch.cleanup.push(fn),
         on: (target, type, fn) => {
@@ -916,6 +1169,7 @@
       if (ROLE === 'viewer') updateAvatar(ease); // before patches, which may look at ctx.head
       animateEditables(t);
       runPatches(dt, t);
+      updateHud?.(dt);
       if (ROLE === 'viewer') {
         applyHeadsetState(ease); // after patches, so the headset's state wins
         updateViewerCamera();

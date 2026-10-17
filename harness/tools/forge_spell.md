@@ -17,6 +17,7 @@ Your answer is one JSON object, the spell:
 | `motion` | One catalog motion id. |
 | `speed` | Meters per second, 0.8-4. Faster is harder to catch. |
 | `power` | 1-3: charge when caught. More complex and rarer spells are worth more. |
+| `target` | `"egg"` or `"user"`: what it flies at. The egg is the thing the player guards; the user is the player in the headset, and a hit costs them health. Choose what the request asks for. If it does not say, choose what fits: heavy, slow or destructive spells at the egg; quick, sneaky or mischievous spells at the user. |
 | `behaviors` | 0-3 library behaviors: `{"id": "...", "params_json": "{...}"}`. Use `"{}"` for the defaults. |
 
 ```json
@@ -34,6 +35,7 @@ Your answer is one JSON object, the spell:
     "motion": {"type": "string", "enum": "{catalog.motions}"},
     "speed": {"type": "number"},
     "power": {"type": "integer"},
+    "target": {"type": "string", "enum": ["egg", "user"]},
     "behaviors": {
       "type": "array",
       "items": {
@@ -44,7 +46,7 @@ Your answer is one JSON object, the spell:
       }
     }
   },
-  "required": ["name", "incantation", "object", "color", "size", "glow", "motion", "speed", "power", "behaviors"],
+  "required": ["name", "incantation", "object", "color", "size", "glow", "motion", "speed", "power", "target", "behaviors"],
   "additionalProperties": false
 }
 ```

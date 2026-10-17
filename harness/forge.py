@@ -284,6 +284,8 @@ class LLMForge:
             "motion": {"id": motion, "speed": clamp(answer.get("speed"), 0.8, 4, catalog.motions[motion]["speed"])},
             "behaviors": behaviors,
         }
+        if answer.get("target") in ("egg", "user"):
+            spell["target"] = answer["target"]  # used when the catalog's targeting mode is "harness"
         if answer.get("flavor"):
             spell["flavor"] = " ".join(str(answer["flavor"]).split())[:160]
         _, error = validate_spell(spell, catalog)
