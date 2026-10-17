@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#14122b" />
+  <title>The Midnight Egg</title>
+  <style>
+    :root {
+      --bg: #14122b; --panel: #1f1c3d; --panel-2: #2a2650; --line: #3b3670;
+      --text: #ecebff; --muted: #a29fd0; --accent: #ffcf5a; --danger: #ff7a7a; --ok: #6be3a0;
+      --team: #8a7cff;
+      --chip-spell: #5b3fa8; --chip-asset: #8a4b1c; --chip-motion: #1d5f7a;
+      --radius: 12px;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.4 system-ui, -apple-system, sans-serif; }
+    body { min-height: 100vh; padding: 12px 16px calc(24px + env(safe-area-inset-bottom)); max-width: 560px; margin: 0 auto; }
+    h1 { font-size: 22px; margin: 8px 0 4px; letter-spacing: 0.5px; }
+    h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin: 18px 0 8px; font-weight: 600; }
+    button { font: inherit; color: inherit; border: 0; cursor: pointer; }
+    input { font: inherit; color: var(--text); }
+    .hidden { display: none !important; }
+    .muted { color: var(--muted); }
+    .card { background: var(--panel); border-radius: var(--radius); padding: 14px; }
+
+    /* Join */
+    #join { text-align: center; padding-top: 12vh; }
+    #join .egg { font-size: 64px; }
+    #join form { display: flex; gap: 8px; margin-top: 20px; }
+    #join input { flex: 1; min-width: 0; padding: 12px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--panel); }
+    .primary { background: var(--accent); color: #241a00; font-weight: 700; padding: 12px 16px; border-radius: var(--radius); }
+    .primary:disabled { opacity: 0.45; cursor: default; }
+
+    /* Sorting */
+    #sorting { position: fixed; inset: 0; display: grid; place-items: center; background: var(--bg); z-index: 10; text-align: center; padding: 16px; }
+    #sorting .team { font-size: 40px; font-weight: 800; color: var(--team); animation: reveal 1.2s ease-out both 0.6s; }
+    @keyframes reveal { from { opacity: 0; transform: scale(0.6); } to { opacity: 1; transform: none; } }
+
+    /* Status bar */
+    #bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .badge { background: var(--team); color: #fff; padding: 3px 10px; border-radius: 999px; font-weight: 700; font-size: 14px; }
+    #phase { font-weight: 600; }
+    #clock { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 700; }
+    #cracks { display: flex; gap: 3px; align-items: center; font-size: 13px; }
+    #cracks i { width: 10px; height: 14px; border-radius: 50% 50% 45% 45%; background: #e8e2c8; display: inline-block; }
+    #cracks i.cracked { background: var(--danger); }
+    #scores { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+    #scores span { font-size: 13px; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); border-left: 4px solid; }
+    #scores span.mine { outline: 1px solid var(--muted); }
+    #banner { margin-top: 10px; padding: 10px 12px; border-radius: var(--radius); background: var(--panel-2); font-weight: 600; }
+
+    /* Composer */
+    #composer {
+      display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 52px;
+      padding: 8px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--bg);
+    }
+    #composer:focus-within { border-color: var(--accent); }
+    #draft { flex: 1; min-width: 140px; border: 0; background: transparent; padding: 6px 4px; outline: none; }
+    .chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 4px 4px 10px; border-radius: 999px; font-size: 14px; color: #fff; }
+    .chip.spell { background: var(--chip-spell); }
+    .chip.asset { background: var(--chip-asset); }
+    .chip.motion { background: var(--chip-motion); }
+    .chip.text { background: transparent; color: var(--text); padding-left: 2px; }
+    .chip .x { background: rgba(0, 0, 0, 0.25); width: 22px; height: 22px; border-radius: 50%; font-size: 13px; line-height: 22px; text-align: center; }
+    .chip.text .x { background: var(--panel-2); }
+    #tier { margin: 8px 2px 0; font-size: 14px; min-height: 20px; }
+    #tier.preset b { color: var(--ok); }
+    #tier.remix b { color: var(--accent); }
+    #tier.novel b { color: #c99bff; }
+    #tier.invalid { color: var(--muted); }
+    #cast-row { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
+    #cast { flex: 1; }
+    #clear { background: var(--panel-2); padding: 12px 14px; border-radius: var(--radius); }
+    #cast-error { color: var(--danger); font-size: 14px; margin-top: 8px; min-height: 0; }
+
+    /* Palette */
+    .palette { display: flex; flex-wrap: wrap; gap: 8px; }
+    .block { padding: 9px 12px; border-radius: var(--radius); font-size: 15px; background: var(--panel-2); border: 1px solid var(--line); text-align: left; }
+    .block:active { transform: scale(0.97); }
+    .block.spell { border-color: var(--chip-spell); }
+    .block.asset { border-color: var(--chip-asset); }
+    .block.motion { border-color: var(--chip-motion); }
+    .block small { display: block; color: var(--muted); font-size: 12px; }
+
+    /* My spells */
+    #mine { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+    #mine li { background: var(--panel); border-radius: var(--radius); padding: 10px 12px; display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; }
+    #mine .what { font-size: 14px; overflow-wrap: anywhere; }
+    #mine .name { font-size: 13px; color: var(--muted); grid-column: 1; }
+    #mine .status { grid-row: 1 / span 2; grid-column: 2; align-self: center; font-size: 13px; font-weight: 700; padding: 3px 10px; border-radius: 999px; background: var(--panel-2); white-space: nowrap; }
+    .status.hit { color: var(--ok); } .status.caught, .status.shielded { color: var(--accent); }
+    .status.failed, .status.expired, .status.fizzled { color: var(--muted); }
+
+    /* Buzz */
+    #buzz { position: fixed; inset: 0; display: grid; place-items: center; text-align: center; padding: 16px; background: var(--team); color: #fff; font-size: 24px; font-weight: 800; z-index: 20; animation: flash 0.25s steps(2) 4; }
+    @keyframes flash { 50% { filter: brightness(1.8); } }
+  </style>
+</head>
+<body>
+  <section id="join" class="hidden">
+    <div class="egg">🥚</div>
+    <h1>The Midnight Egg</h1>
+    <p class="muted">The wizard must guard the egg until midnight. You decide what flies at it.</p>
+    <form id="join-form">
+      <input id="join-name" maxlength="20" autocomplete="nickname" placeholder="Your name" required />
+      <button class="primary">Enter</button>
+    </form>
+    <p id="join-error" class="muted"></p>
+  </section>
+
+  <div id="sorting" class="hidden">
+    <div>
+      <div class="muted">The enchanted mirror says…</div>
+      <div class="team" id="sorting-team"></div>
+    </div>
+  </div>
+
+  <main id="main" class="hidden">
+    <div class="card">
+      <div id="bar">
+        <span class="badge" id="me-badge"></span>
+        <span id="phase"></span>
+        <span id="clock"></span>
+      </div>
+      <div id="cracks" style="margin-top:8px"></div>
+      <div id="scores"></div>
+      <div id="banner" class="hidden"></div>
+    </div>
+
+    <h2>Compose a spell</h2>
+    <div class="card">
+      <div id="composer">
+        <input id="draft" maxlength="120" autocomplete="off" enterkeyhint="send" placeholder="Tap blocks below, or describe a spell…" />
+      </div>
+      <div id="tier"></div>
+      <div id="cast-row">
+        <button id="clear" type="button">Clear</button>
+        <button id="cast" class="primary" type="button">Cast</button>
+      </div>
+      <div id="cast-error"></div>
+    </div>
+
+    <h2>Ready-made spells</h2>
+    <div class="palette" id="palette-spell"></div>
+    <h2>Things to throw</h2>
+    <div class="palette" id="palette-asset"></div>
+    <h2>Ways to fly</h2>
+    <div class="palette" id="palette-motion"></div>
+
+    <h2>Your spells</h2>
+    <ul id="mine"><li class="muted">Nothing cast yet.</li></ul>
+  </main>
+
+  <div id="buzz" class="hidden"></div>
+
+  <script>
+    const $ = (sel) => document.querySelector(sel);
+    const MAX_TEXT = 120;
+    const KINDS = ['spell', 'asset', 'motion'];
+    const TIERS = {
+      preset: ['⚡ Instant', 'everything already exists, so it flies right away'],
+      remix: ['✨ Remix', 'the forge makes a small change, so it is quick'],
+      novel: ['🔮 New spell', 'the forge invents it from scratch, so it takes longest'],
+    };
+    const STATUS = {
+      queued: 'In line', forging: 'Brewing…', ready: 'Ready', cast: 'In flight!', hit: 'Hit! 💥',
+      caught: 'Caught', shielded: 'Shielded', fizzled: 'Fizzled', failed: 'Failed', expired: 'Expired',
+    };
+    const PHASES = { lobby: 'Waiting for the round', dusk: 'Dusk', storm: 'Storm', midnight: 'Midnight!', over: 'Round over' };
+
+    // Per-viewer conveniences only; the server is the source of truth.
+    const store = {
+      get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
+      set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
+      del: (k) => { try { localStorage.removeItem(k); } catch {} },
+    };
+
+    let catalog = null;
+    let token = store.get('midnight-egg-token');
+    let me = null;
+    let state = null;
+    let parts = [];            // committed parts of the composer: {type: 'ingredient', kind, id} | {type: 'text', text}
+    const requests = new Map(); // id -> request, as the server last described it
+    let cooldownUntil = 0;
+    let events = null;
+
+    function el(tag, props = {}, ...children) {
+      const node = Object.assign(document.createElement(tag), props);
+      for (const c of children) if (c != null) node.append(c);
+      return node;
+    }
+
+    async function api(path, { method = 'GET', body, headers = {} } = {}) {
+      const res = await fetch(path, {
+        method,
+        headers: { 'Content-Type': 'application/json', ...(token ? { 'X-Token': token } : {}), ...headers },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), { status: res.status, data });
+      return data;
+    }
+
+    function block(kind, id) {
+      const b = catalog[kind === 'spell' ? 'spells' : kind + 's'].find((x) => x.id === id);
+      if (kind === 'spell') {
+        const asset = catalog.assets.find((a) => a.id === b.asset);
+        return { emoji: asset.emoji, label: b.name };
+      }
+      return { emoji: b.emoji, label: b.label };
+    }
+
+    // ---- views -------------------------------------------------------------------------------
+
+    function show(id) {
+      for (const v of ['join', 'main']) $('#' + v).classList.toggle('hidden', v !== id);
+    }
+
+    function setTeamColor(color) {
+      document.documentElement.style.setProperty('--team', color);
+    }
+
+    // ---- join --------------------------------------------------------------------------------
+
+    $('#join-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      $('#join-error').textContent = '';
+      try {
+        const data = await api('/api/join', { method: 'POST', body: { name: $('#join-name').value } });
+        token = data.token;
+        store.set('midnight-egg-token', token);
+        applyMe(data);
+        setTeamColor(data.member.color);
+        $('#sorting-team').textContent = data.member.team.toUpperCase();
+        $('#sorting').classList.remove('hidden');
+        setTimeout(() => $('#sorting').classList.add('hidden'), 2600);
+        enterMain();
+      } catch (err) {
+        $('#join-error').textContent = err.message;
+      }
+    });
+
+    function enterMain() {
+      show('main');
+      connect();
+    }
+
+    function forget() {
+      token = null;
+      me = null;
+      store.del('midnight-egg-token');
+      events?.close();
+      requests.clear();
+      show('join');
+    }
+
+    // ---- live updates ------------------------------------------------------------------------
+
+    function connect() {
+      events?.close();
+      events = new EventSource(`/api/events?role=audience&token=${encodeURIComponent(token)}`);
+      events.addEventListener('game:state', (e) => { state = JSON.parse(e.data); renderState(); });
+      events.addEventListener('me', (e) => applyMe(JSON.parse(e.data)));
+      events.addEventListener('spell:status', (e) => { const r = JSON.parse(e.data); requests.set(r.id, r); renderMine(); });
+      events.addEventListener('audience:buzz', (e) => buzz(JSON.parse(e.data)));
+      events.onerror = async () => {
+        if (events.readyState !== EventSource.CLOSED) return; // the browser is already retrying
+        try {
+          applyMe(await api('/api/me'));
+          setTimeout(connect, 2000);
+        } catch (err) {
+          if (err.status === 401) forget(); // e.g. the server restarted
+          else setTimeout(connect, 3000);
+        }
+      };
+    }
+
+    function applyMe(data) {
+      me = data.member;
+      setTeamColor(me.color);
+      $('#me-badge').textContent = `${me.name} · ${me.team}`;
+      for (const r of data.requests) requests.set(r.id, r);
+      cooldownUntil = Date.now() + data.cooldown_s * 1000;
+      renderMine();
+      updateCast();
+    }
+
+    function renderState() {
+      if (!state) return;
+      $('#phase').textContent = PHASES[state.phase] ?? state.phase;
+      const s = Math.max(0, Math.ceil(state.remaining_s));
+      $('#clock').textContent = state.phase === 'lobby' || state.phase === 'over' ? '' : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} to midnight`;
+      $('#cracks').replaceChildren(
+        el('span', { className: 'muted', textContent: 'Egg ' }),
+        ...Array.from({ length: state.max_cracks }, (_, i) => el('i', { className: i < state.cracks ? 'cracked' : '' })),
+        el('span', { className: 'muted', textContent: ` · charge ${state.charge}` }),
+      );
+      $('#scores').replaceChildren(...state.teams.map((t) => {
+        const span = el('span', { textContent: `${t.name} ${state.scores[t.id]}`, className: t.id === me?.team ? 'mine' : '' });
+        span.style.borderLeftColor = t.color;
+        return span;
+      }));
+      const banner = $('#banner');
+      if (state.phase === 'over') {
+        const best = Math.max(...Object.values(state.scores));
+        const top = state.teams.filter((t) => state.scores[t.id] === best).map((t) => t.name).join(' & ');
+        banner.textContent = (state.outcome === 'hatched' ? '🐣 The egg survived until midnight and hatched!' : '💥 The egg broke open early!') + ` Top team: ${top}.`;
+      } else if (state.phase === 'lobby') {
+        banner.textContent = 'The round hasn’t started. Spells you cast now wait for dusk.';
+      }
+      banner.classList.toggle('hidden', state.phase !== 'over' && state.phase !== 'lobby');
+      updateTier();
+      renderMine();
+    }
+
+    function buzz(data) {
+      navigator.vibrate?.([200, 100, 200, 100, 300]);
+      const overlay = $('#buzz');
+      overlay.textContent = `The wizard sent “${data.spell}” back at you! −${data.penalty}`;
+      overlay.classList.remove('hidden');
+      setTimeout(() => overlay.classList.add('hidden'), 2200);
+    }
+
+    // ---- composer ----------------------------------------------------------------------------
+
+    const draft = $('#draft');
+
+    function allParts() {
+      const text = draft.value.trim();
+      return text ? [...parts, { type: 'text', text }] : parts;
+    }
+
+    function commitDraft() {
+      const text = draft.value.trim();
+      if (text) parts.push({ type: 'text', text });
+      draft.value = '';
+    }
+
+    function addBlock(kind, id) {
+      commitDraft();
+      parts.push({ type: 'ingredient', kind, id });
+      renderComposer();
+    }
+
+    function renderComposer() {
+      const chips = parts.map((p, i) => {
+        const remove = el('button', { className: 'x', type: 'button', textContent: '×', ariaLabel: 'Remove' });
+        remove.addEventListener('click', () => { parts.splice(i, 1); renderComposer(); });
+        if (p.type === 'text') return el('span', { className: 'chip text' }, p.text, remove);
+        const b = block(p.kind, p.id);
+        return el('span', { className: `chip ${p.kind}` }, `${b.emoji} ${b.label}`, remove);
+      });
+      $('#composer').replaceChildren(...chips, draft);
+      updateTier();
+    }
+
+    // Mirrors Recipe.tier() in game/spell_request.py; the server has the final say.
+    function classify(ps) {
+      const n = Object.fromEntries(KINDS.map((k) => [k, ps.filter((p) => p.type === 'ingredient' && p.kind === k).length]));
+      const text = ps.filter((p) => p.type === 'text').map((p) => p.text).join(' ');
+      const things = n.spell + n.asset;
+      if (!ps.length) return { error: 'Tap a block or describe a spell.' };
+      if (!things && !text) return { error: 'Add something to throw, or describe it.' };
+      if (text.length > MAX_TEXT) return { error: `Keep the description under ${MAX_TEXT} characters.` };
+      if (!text && KINDS.every((k) => n[k] <= 1)) return { tier: 'preset' };
+      return { tier: things ? 'remix' : 'novel' };
+    }
+
+    function updateTier() {
+      const { tier, error } = classify(allParts());
+      const line = $('#tier');
+      line.className = tier || 'invalid';
+      if (error) {
+        line.textContent = error;
+      } else {
+        const [label, why] = TIERS[tier];
+        const offline = tier !== 'preset' && state && !state.forge_online ? ' (the forge is offline right now, so it waits in line)' : '';
+        line.replaceChildren(el('b', { textContent: label }), ` · ${why}${offline}`);
+      }
+      updateCast();
+    }
+
+    function updateCast() {
+      const left = Math.ceil((cooldownUntil - Date.now()) / 1000);
+      const cast = $('#cast');
+      const invalid = !!classify(allParts()).error;
+      cast.disabled = left > 0 || invalid || state?.phase === 'over';
+      cast.textContent = left > 0 ? `Recharging… ${left}s` : 'Cast';
+    }
+    setInterval(updateCast, 500);
+
+    draft.addEventListener('input', updateTier);
+    draft.addEventListener('keydown', (e) => {
+      if (e.key === 'Backspace' && !draft.value && parts.length) {
+        e.preventDefault();
+        const last = parts.pop();
+        if (last.type === 'text') draft.value = last.text;
+        renderComposer();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        cast();
+      }
+    });
+    $('#composer').addEventListener('click', (e) => { if (e.target.id === 'composer') draft.focus(); });
+    $('#clear').addEventListener('click', () => { parts = []; draft.value = ''; renderComposer(); });
+    $('#cast').addEventListener('click', cast);
+
+    async function cast() {
+      if ($('#cast').disabled) return;
+      $('#cast-error').textContent = '';
+      try {
+        const data = await api('/api/spells', { method: 'POST', body: { parts: allParts() } });
+        parts = [];
+        draft.value = '';
+        renderComposer();
+        applyMe(data);
+      } catch (err) {
+        if (err.status === 401) return forget();
+        if (err.data?.retry_after) cooldownUntil = Date.now() + err.data.retry_after * 1000;
+        $('#cast-error').textContent = err.message;
+      }
+    }
+
+    // ---- palette and my spells ---------------------------------------------------------------
+
+    function renderPalette() {
+      for (const kind of KINDS) {
+        const items = catalog[kind === 'spell' ? 'spells' : kind + 's'];
+        $(`#palette-${kind}`).replaceChildren(...items.map((item) => {
+          const b = block(kind, item.id);
+          const hint = kind === 'spell'
+            ? `“${item.incantation}” · ${block('asset', item.asset).label}, ${block('motion', item.motion).label.toLowerCase()}`
+            : kind === 'motion' ? item.description : null;
+          const button = el('button', { className: `block ${kind}`, type: 'button' }, `${b.emoji} ${b.label}`, hint && el('small', { textContent: hint }));
+          button.addEventListener('click', () => addBlock(kind, item.id));
+          return button;
+        }));
+      }
+    }
+
+    function describe(ps) {
+      return ps.map((p) => {
+        if (p.type === 'text') return p.text;
+        const b = block(p.kind, p.id);
+        return `${b.emoji} ${b.label}`;
+      }).join(' · ');
+    }
+
+    function statusText(r) {
+      if (r.status === 'queued') {
+        const wait = r.tier !== 'preset' && state && !state.forge_online ? ' (forge offline)' : '';
+        return r.ahead ? `In line · ${r.ahead} ahead${wait}` : `In line${wait}`;
+      }
+      if (r.status === 'ready' && state?.phase === 'lobby') return 'Ready for dusk';
+      return STATUS[r.status] ?? r.status;
+    }
+
+    function renderMine() {
+      if (!catalog) return;
+      const list = [...requests.values()].sort((a, b) => b.created_at - a.created_at).slice(0, 8);
+      if (!list.length) return;
+      $('#mine').replaceChildren(...list.map((r) => el('li', {},
+        el('div', { className: 'what', textContent: `${TIERS[r.tier][0].split(' ')[0]} ${describe(r.parts)}` }),
+        el('span', { className: `status ${r.status}`, textContent: statusText(r) }),
+        el('div', { className: 'name', textContent: r.spell ? `${r.spell.name} · “${r.spell.incantation}”` : (r.error ?? '') }),
+      )));
+    }
+
+    // ---- boot --------------------------------------------------------------------------------
+
+    (async () => {
+      catalog = await api('/api/catalog');
+      renderPalette();
+      renderComposer();
+      if (!token) return show('join');
+      try {
+        applyMe(await api('/api/me'));
+        enterMain();
+      } catch {
+        forget();
+      }
+    })();
+  </script>
+</body>
+</html>

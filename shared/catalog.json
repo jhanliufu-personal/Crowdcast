@@ -1,0 +1,30 @@
+{
+  "default_motion": "straight",
+  "channel_ms": 2500,
+
+  "assets": [
+    { "id": "fireball",    "label": "Fireball",    "emoji": "🔥", "shape": "sphere",   "color": "#ff6a1f", "size": 0.3,  "glow": true,  "power": 1, "stem": "Flamm",  "tags": ["elemental", "fire"] },
+    { "id": "ice-shard",   "label": "Ice shard",   "emoji": "🧊", "shape": "cone",     "color": "#9fe3ff", "size": 0.35, "glow": true,  "power": 1, "stem": "Glaci",  "tags": ["elemental", "ice"] },
+    { "id": "cursed-book", "label": "Cursed book", "emoji": "📕", "shape": "book",     "color": "#7a1f1f", "size": 0.3,  "glow": false, "power": 1, "stem": "Libr",   "tags": ["object"] },
+    { "id": "thorn-ring",  "label": "Thorn ring",  "emoji": "🌿", "shape": "torus",    "color": "#3fae4a", "size": 0.4,  "glow": false, "power": 1, "stem": "Spin",   "tags": ["plant"] },
+    { "id": "stone-block", "label": "Stone block", "emoji": "🪨", "shape": "box",      "color": "#8a8a8a", "size": 0.35, "glow": false, "power": 2, "stem": "Petr",   "tags": ["object", "heavy"] },
+    { "id": "storm-rod",   "label": "Storm rod",   "emoji": "⚡", "shape": "cylinder", "color": "#ffe14d", "size": 0.4,  "glow": true,  "power": 2, "stem": "Fulg",   "tags": ["elemental", "lightning"] }
+  ],
+
+  "motions": [
+    { "id": "straight",  "label": "Straight",  "emoji": "➡️", "adjective": "Swift",       "suffix": "o",     "power": 0, "speed": 2.5, "description": "Flies in a straight line at the egg." },
+    { "id": "homing",    "label": "Homing",    "emoji": "🎯", "adjective": "Seeking",     "suffix": "ax",    "power": 1, "speed": 2.0, "description": "Turns to follow the egg." },
+    { "id": "zigzag",    "label": "Zigzag",    "emoji": "〰️", "adjective": "Zigzagging",  "suffix": "izzo",  "power": 1, "speed": 2.0, "description": "Darts side to side on the way in." },
+    { "id": "spiral",    "label": "Spiral",    "emoji": "🌀", "adjective": "Spiralling",  "suffix": "ora",   "power": 1, "speed": 1.8, "description": "Corkscrews toward the egg." },
+    { "id": "arc",       "label": "Lob",       "emoji": "🏹", "adjective": "Lobbed",      "suffix": "ulo",   "power": 0, "speed": 2.2, "description": "Arcs high and drops onto the egg." },
+    { "id": "boomerang", "label": "Boomerang", "emoji": "🪃", "adjective": "Boomeranging","suffix": "erang", "power": 1, "speed": 2.4, "description": "Overshoots, then curves back in." }
+  ],
+
+  "spells": [
+    { "id": "ember-bolt",  "name": "Ember Bolt",  "incantation": "Emberos",   "asset": "fireball",    "motion": "straight", "power": 1 },
+    { "id": "frost-lance", "name": "Frost Lance", "incantation": "Glacivo",   "asset": "ice-shard",   "motion": "homing",   "power": 2 },
+    { "id": "flying-tome", "name": "Flying Tome", "incantation": "Libraxa",   "asset": "cursed-book", "motion": "zigzag",   "power": 2 },
+    { "id": "thorn-halo",  "name": "Thorn Halo",  "incantation": "Spinthora", "asset": "thorn-ring",  "motion": "spiral",   "power": 2 },
+    { "id": "thunder-lob", "name": "Thunder Lob", "incantation": "Fulgara",   "asset": "storm-rod",   "motion": "arc",      "power": 3 }
+  ]
+}

@@ -12,22 +12,34 @@ http://localhost:8000 reaches this server.
 The chat box posts to /api/chat, handled by scene_agent.py with the Claude API. Set your key in
 the shell before starting the server (export ANTHROPIC_API_KEY=...); it stays on this machine.
 Optional: WORLDTINDER_MODEL (default claude-opus-5-5) and WORLDTINDER_EFFORT (default low).
+
+The game server (game/) handles every other /api/ route; the audience web app is at /audience/.
+Host and headset calls need the host key: WORLDTINDER_HOST_KEY, or a random one printed at startup.
 """
 
 import argparse
 import functools
 import http.server
 import json
+import os
+import re
+import secrets
 import socket
 import ssl
 import subprocess
 from pathlib import Path
+
+from game.catalog import Catalog
+from game.engine import GameEngine
+from game.events import EventHub
+from game.http_api import GameAPI
 
 ROOT = Path(__file__).resolve().parent
 CERT_DIR = ROOT / ".certs"
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    game_api = None  # set in main()
     extensions_map = {
         **http.server.SimpleHTTPRequestHandler.extensions_map,
         ".gltf": "model/gltf+json",
@@ -36,14 +48,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ".js": "text/javascript",
     }
 
+    def log_message(self, format, *args):
+        # EventSource puts the audience token or host key in the URL; keep them out of the log.
+        super().log_message(format, *(re.sub(r"\b(token|key)=[^&\s\"]+", r"\1=…", a) if isinstance(a, str) else a for a in args))
+
     def end_headers(self):
         # Always serve fresh files so edits show up on reload.
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
+    def do_GET(self):
+        if self.path.startswith("/api/"):
+            if not self.game_api.handle(self, "GET"):
+                self.send_error(404)
+            return
+        super().do_GET()
+
     def do_POST(self):
         if self.path != "/api/chat":
-            self.send_error(404)
+            if not self.game_api.handle(self, "POST"):
+                self.send_error(404)
             return
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
@@ -99,6 +123,11 @@ def main():
 
     port = args.port or (8443 if args.https else 8000)
     ip = lan_ip()
+    hub = EventHub()
+    engine = GameEngine(Catalog.load(), hub)
+    engine.start()
+    host_key = os.environ.get("WORLDTINDER_HOST_KEY") or secrets.token_urlsafe(8)
+    Handler.game_api = GameAPI(engine, hub, host_key)
     handler = functools.partial(Handler, directory=str(ROOT))
     server = http.server.ThreadingHTTPServer(("0.0.0.0", port), handler)
 
@@ -113,11 +142,16 @@ def main():
         print(f"Mac:   http://localhost:{port}")
         print(f"Quest: plug in USB, run `adb reverse tcp:{port} tcp:{port}`, then open http://localhost:{port}")
         print("       (or restart with --https to use Wi-Fi)")
+    base = f"{'https' if args.https else 'http'}://{ip}:{port}"
+    print(f"Audience: {base}/audience/   (phones on the same network{'' if args.https else '; WebXR still needs HTTPS or localhost'})")
+    print(f"Host:     {base}/host/#key={host_key}   (roster, live queue, start / reset)")
 
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        engine.stop()
 
 
 if __name__ == "__main__":
