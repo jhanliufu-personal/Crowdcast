@@ -32,7 +32,7 @@ const toTarget = new THREE.Vector3();
 
 ctx.onFrame((dt) => {
   mixer.update(dt);
-  ctx.camera.getWorldPosition(user);
+  ctx.head.getWorldPosition(user);
   user.y = 0;
   const userDistance = user.distanceTo(robot.position);
   if (state === 'walk' && userDistance < 2.5) {

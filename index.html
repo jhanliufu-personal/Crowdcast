@@ -21,6 +21,8 @@
     #chat-log .meta { color: #888; font-size: 11px; }
     #chat-log .error { color: #f99; }
     #chat-input { width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 5px; border: 1px solid #555; background: #222; color: #eee; }
+    body.viewer .headset-only, body.headset .viewer-only { display: none; }
+    #info .dim { color: #999; }
   </style>
   <script type="importmap">
     {
@@ -35,10 +37,12 @@
   <div id="info">
     <div id="status">Loading scene…</div>
     <div id="sync">Live sync: connecting…</div>
-    <div>Desktop: drag to look · WASD/arrows to move · Q/E down/up · B to add a book</div>
-    <div>VR: left stick to move · right stick to snap-turn · trigger to add a book</div>
-    <div>No headset? Open <a href="?emulate">?emulate</a> for an emulated Quest 3</div>
-    <div>On the laptop, <a href="?mirror">?mirror</a> shows the scene from the headset's point of view</div>
+    <div class="headset-only">Desktop: drag to look · WASD/arrows to move · Q/E down/up · B to add a book</div>
+    <div class="headset-only">VR: left stick to move · right stick to snap-turn · trigger to add a book</div>
+    <div class="viewer-only" id="headset-status">Headset: waiting for it to connect</div>
+    <div class="viewer-only dim" id="recent-edits"></div>
+    <div class="viewer-only">Drag to orbit · scroll to zoom · <a href="#" id="view-toggle">V: headset's view</a> · B: add a book in front of the user</div>
+    <div class="viewer-only dim">No Quest? <a href="?headset">?headset</a> or <a href="?emulate">?emulate</a> make this tab stand in for it</div>
     <div>Model: <a href="https://sketchfab.com/3d-models/library-7fc61f0d65ee49d0b2904e85d1fa520e" target="_blank">"library"</a>
       by <a href="https://sketchfab.com/Pasha." target="_blank">Pasha</a>, CC-BY-4.0</div>
   </div>
@@ -56,9 +60,10 @@
     import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
     const params = new URLSearchParams(location.search);
-    // A "player" page is one someone is using (the headset, or a desktop tab); a "mirror" page (?mirror) follows
-    // the player's head instead of taking input. See "Live sync" below.
-    const ROLE = params.has('mirror') ? 'mirror' : 'player';
+    // One headset drives the scene, and every other page is a viewer of it (see "Live sync" below). The Quest's
+    // browser is the headset; ?headset or ?emulate make a desktop tab stand in for it, for testing without one.
+    const ROLE = /OculusBrowser/.test(navigator.userAgent) || params.has('headset') || params.has('emulate') ? 'headset' : 'viewer';
+    document.body.classList.add(ROLE);
     // The server only takes scene edits from its own machine, or with the host key it prints at startup:
     // open the page as https://<mac-ip>:8443/#key=… on the Quest over Wi-Fi. In the hash, so page loads don't send it.
     const HOST_KEY = new URLSearchParams(location.hash.slice(1)).get('key') || '';
@@ -100,7 +105,7 @@
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.xr.enabled = true;
     document.body.appendChild(renderer.domElement);
-    document.body.appendChild(VRButton.createButton(renderer));
+    if (ROLE === 'headset') document.body.appendChild(VRButton.createButton(renderer));
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x202024);
@@ -118,17 +123,26 @@
     const rig = new THREE.Group();
     rig.name = 'rig';
     scene.add(rig);
-    const camera = new THREE.PerspectiveCamera(ROLE === 'mirror' ? 90 : 70, window.innerWidth / window.innerHeight, 0.05, 200);
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 200);
     camera.name = 'head';
     camera.position.set(0, EYE_HEIGHT, 0);
     rig.add(camera);
 
+    // The user's head: on the headset that's the camera; a viewer has a stand-in, moved by the headset's pose
+    // messages and drawn as a simple avatar. Patches get it as ctx.head.
+    const head = ROLE === 'headset' ? camera : makeAvatar();
+
     const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enabled = ROLE === 'player'; // a mirror's camera follows the player's head
     controls.enableDamping = true;
-    controls.enablePan = false;
-    // Tiny orbit radius around a point just ahead of the eye = first-person "look around".
-    controls.target.set(0, EYE_HEIGHT, -0.01);
+    if (ROLE === 'headset') {
+      controls.enablePan = false;
+      // Tiny orbit radius around a point just ahead of the eye = first-person "look around".
+      controls.target.set(0, EYE_HEIGHT, -0.01);
+    } else {
+      // A viewer orbits around the user, starting behind and above them.
+      camera.position.set(0, EYE_HEIGHT + 2, 4);
+      controls.target.set(0, EYE_HEIGHT, 0);
+    }
     controls.update();
 
     // Editable objects: everything you can add, change or remove at runtime (by trigger, key or chat) lives here.
@@ -290,108 +304,6 @@
       }
     }
 
-    // The glowing cube from before, now just an editable object with the 'orbit' animation and a hypnotic glow.
-    addObject({ name: 'orange-cube', shape: 'box', color: '#ff5533', size: 0.25, position: [0, 1.4, 0], animation: 'orbit', glow: true, hypnotic: true });
-
-    // A giant, furious eyeball hovering in the room. It glares at your head wherever you go, trembles with rage,
-    // throbs red light over the room, lunges at you every few seconds, and its slit pupil narrows as you get closer.
-
-    // Bloodshot sclera, drawn once onto a canvas. On the sphere's UVs the iris (+Z) sits at canvas (256, 256),
-    // so veins start out wide around it and wiggle inward, thinning as they approach the iris.
-    function bloodshotTexture() {
-      const c = document.createElement('canvas');
-      c.width = 1024;
-      c.height = 512;
-      const g = c.getContext('2d');
-      g.fillStyle = '#f3e4da';
-      g.fillRect(0, 0, c.width, c.height);
-      const flush = g.createRadialGradient(256, 256, 80, 256, 256, 420);
-      flush.addColorStop(0, 'rgba(200, 30, 30, 0)');
-      flush.addColorStop(1, 'rgba(200, 30, 30, 0.55)');
-      g.fillStyle = flush;
-      g.fillRect(0, 0, c.width, c.height);
-      g.strokeStyle = '#a50f18';
-      g.lineCap = 'round';
-      function vein(x, y, angle, width, steps) {
-        for (let i = 0; i < steps; i++) {
-          const nx = x + Math.cos(angle) * 6, ny = y + Math.sin(angle) * 6;
-          g.lineWidth = width;
-          g.beginPath();
-          g.moveTo(x, y);
-          g.lineTo(nx, ny);
-          g.stroke();
-          x = nx; y = ny;
-          angle += (Math.random() - 0.5) * 0.6;
-          width *= 0.96;
-          if (Math.random() < 0.08 && width > 0.8) vein(x, y, angle + (Math.random() - 0.5) * 1.5, width * 0.7, steps - i);
-        }
-      }
-      for (let i = 0; i < 45; i++) {
-        const a = Math.random() * Math.PI * 2;
-        vein(256 + Math.cos(a) * 270, 256 + Math.sin(a) * 270, a + Math.PI, 4.5, 30);
-      }
-      const texture = new THREE.CanvasTexture(c);
-      texture.colorSpace = THREE.SRGBColorSpace;
-      return texture;
-    }
-
-    const eye = new THREE.Group();
-    const sclera = new THREE.MeshStandardMaterial({ map: bloodshotTexture(), emissive: 0x500000, roughness: 0.2 });
-    eye.add(new THREE.Mesh(new THREE.SphereGeometry(0.35, 48, 32), sclera));
-    // Iris and pupil are squashed spheres on the +Z side, which is the side lookAt() points at the target.
-    const iris = new THREE.Mesh(new THREE.SphereGeometry(0.14, 32, 16), new THREE.MeshStandardMaterial({ color: 0xd01010, emissive: 0xff2000, roughness: 0.3 }));
-    iris.scale.z = 0.35;
-    iris.position.z = 0.31;
-    const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.065, 24, 12), new THREE.MeshBasicMaterial({ color: 0x000000 }));
-    pupil.position.z = 0.345;
-    // A heavy upper lid: a cap over the top of the ball, tipped forward so it hangs low over the iris in a glare.
-    const lid = new THREE.Mesh(new THREE.SphereGeometry(0.36, 48, 16, 0, Math.PI * 2, 0, 1.05), new THREE.MeshStandardMaterial({ color: 0x5a1414, roughness: 0.6 }));
-    lid.rotation.x = 0.3;
-    // Brows in a furious V, inner ends low.
-    const browMat = new THREE.MeshStandardMaterial({ color: 0x1a0505, roughness: 0.9 });
-    const brows = [-1, 1].map((side) => {
-      const brow = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.07, 0.08), browMat);
-      brow.position.set(side * 0.15, 0.37, 0.2);
-      brow.rotation.z = side * 0.4;
-      return brow;
-    });
-    const rageLight = new THREE.PointLight(0xff1a00, 3, 5);
-    eye.add(iris, pupil, lid, ...brows, rageLight);
-    eye.name = 'angry-eye';
-    scene.add(eye);
-
-    const eyeHead = new THREE.Vector3();
-    const eyeHome = new THREE.Vector3();
-    const eyeToHead = new THREE.Vector3();
-    const eyeAim = new THREE.Object3D();
-    function updateEye(t, dt) {
-      camera.getWorldPosition(eyeHead);
-      eyeHome.set(0, 2.1 + Math.sin(t * 0.9) * 0.08, -1.4);
-      eyeToHead.subVectors(eyeHead, eyeHome);
-      const dist = eyeToHead.length();
-      // Every 6 s, lunge toward your face and snap back, never closer than 0.8 m.
-      const phase = t % 6;
-      const lunge = phase < 0.6 ? Math.sin((phase / 0.6) * Math.PI) * Math.min(0.6, Math.max(0, dist - 0.8)) : 0;
-      eye.position.copy(eyeHome).addScaledVector(eyeToHead.normalize(), lunge);
-      // Trembling with rage.
-      eye.position.x += (Math.random() - 0.5) * 0.015;
-      eye.position.y += (Math.random() - 0.5) * 0.015;
-      eyeAim.position.copy(eye.position);
-      eyeAim.lookAt(eyeHead);
-      eye.quaternion.slerp(eyeAim.quaternion, Math.min(1, dt * 10));
-      const blink = t % 4.3; // a 0.15 s squash every 4.3 s
-      eye.scale.y = blink < 0.15 ? 0.1 + 0.9 * Math.abs(blink - 0.075) / 0.075 : 1;
-      // Slit pupil narrows as you approach.
-      const close = THREE.MathUtils.clamp((2.5 - dist) / 1.5, 0, 1);
-      pupil.scale.set(0.45 - 0.3 * close, 1.3, 0.4);
-      // Throbbing red glow, faster and brighter mid-lunge; brows twitch.
-      const throb = 0.5 + 0.5 * Math.sin(t * (lunge > 0 ? 18 : 6));
-      iris.material.emissiveIntensity = 0.6 + 1.4 * throb;
-      sclera.emissiveIntensity = 0.3 + 0.7 * throb;
-      rageLight.intensity = 2 + 6 * throb;
-      brows.forEach((brow, i) => { brow.rotation.z = (i ? 1 : -1) * (0.4 + 0.08 * Math.sin(t * 23 + i)); });
-    }
-
     // Each trigger press (or B on desktop) adds a floating book 40 cm in front of whatever is pointing.
     const spawnPos = new THREE.Vector3();
     const spawnDir = new THREE.Vector3();
@@ -421,7 +333,7 @@
     });
 
     window.addEventListener('keydown', (e) => {
-      if (e.code === 'KeyB' && !typing(e) && !renderer.xr.isPresenting) spawnInFrontOf(camera, 1.0);
+      if (e.code === 'KeyB' && !typing(e) && !renderer.xr.isPresenting) spawnInFrontOf(head, 1.0);
     });
 
     // Chat box: send the message plus the current scene state to serve.py, which asks Claude for tool calls
@@ -432,8 +344,9 @@
     const round = (v) => Math.round(v * 100) / 100;
 
     function sceneState() {
-      const pos = camera.getWorldPosition(new THREE.Vector3());
-      const dir = camera.getWorldDirection(new THREE.Vector3());
+      const pos = head.getWorldPosition(new THREE.Vector3());
+      // Cameras look down -Z and getWorldDirection says so; for other objects (a viewer's head) it gives +Z.
+      const dir = head.getWorldDirection(new THREE.Vector3()).multiplyScalar(head.isCamera ? 1 : -1);
       dir.y = 0;
       dir.normalize();
       return {
@@ -616,8 +529,9 @@
     // serve.py keeps an ordered log of scene edits and sends each one to every open page over a WebSocket.
     // Pages apply edits as they arrive, without reloading, and replay the whole log when they (re)load.
     // An edit is either a list of chat-style commands, or a patch: a named snippet of JavaScript (see setPatch).
-    // The player page also streams its head and controller poses to the server (and on to mirrors), and answers
-    // the server's requests for a snapshot of its live scene graph.
+    // The headset is the authority on what's actually happening: it streams its pose (30×/s) and its scene state
+    // (10×/s) to the server, which keeps the latest for the laptop (GET /api/state) and relays them to viewers.
+    // Viewers run the same edits, then move their copies of the headset's objects to match its state.
     const syncEl = document.getElementById('sync');
     let socket = null;
     let session = null; // the server's session id; if it changes, our applied edits are stale
@@ -654,9 +568,9 @@
         } else if (msg.type === 'reload') {
           location.reload();
         } else if (msg.type === 'pose') {
-          playerPose = { ...msg, at: performance.now() };
-        } else if (msg.type === 'request' && msg.what === 'snapshot') {
-          send({ type: 'reply', rid: msg.rid, data: snapshot() });
+          headsetPose = { ...msg, at: performance.now() };
+        } else if (msg.type === 'state') {
+          headsetState = msg;
         }
       };
     }
@@ -698,13 +612,16 @@
     // async function (so `await` works) with `THREE` and `ctx` in scope:
     //   ctx.root                 a Group for everything the patch adds; it's removed, and its meshes disposed, with the patch
     //                            (detach anything sharing geometry or materials with the rest of the scene in onRemove)
-    //   ctx.onFrame((dt, t) => …) per-frame logic; t is the player's clock, so mirrors animate in step
+    //   ctx.onFrame((dt, t) => …) per-frame logic; t is the headset's clock, so viewers animate in step
     //   ctx.on(target, type, fn) addEventListener that's undone with the patch, e.g. ctx.on(ctx.controllers[0], 'selectstart', …)
     //   ctx.onRemove(fn)         other cleanup, e.g. undoing changes the patch made outside ctx.root
     //   ctx.load(url)            load a glTF/GLB: resolves to { scene, animations, … }
     //   ctx.import(path)         load a three.js addon, e.g. await ctx.import('geometries/TextGeometry.js')
-    //   ctx.scene, ctx.camera (the user's head), ctx.rig (what locomotion moves), ctx.controllers, ctx.renderer,
-    //   ctx.world() (the room model), ctx.addObject / updateObject / removeObject (the chat box's simple objects)
+    //   ctx.head                 the user's head, on any page (the camera looks down its -Z)
+    //   ctx.isViewer             true on viewers: patches run there too, for looks, but the headset's state wins, so
+    //                            skip side effects there (like adding objects or sending edits)
+    //   ctx.scene, ctx.camera (what this page renders from), ctx.rig (what locomotion moves), ctx.controllers,
+    //   ctx.renderer, ctx.world() (the room model), ctx.addObject / updateObject / removeObject (the chat box's objects)
     // Returning a function from the code also registers it as cleanup.
     const patches = new Map(); // id -> { root, frame: [fn], cleanup: [fn] }
     const AsyncFunction = (async () => {}).constructor;
@@ -717,7 +634,8 @@
       scene.add(patch.root);
       patches.set(id, patch);
       const ctx = {
-        THREE, scene, camera, rig, controllers, renderer, root: patch.root,
+        THREE, scene, camera, head, rig, controllers, renderer, root: patch.root,
+        isViewer: ROLE === 'viewer',
         world: () => worldModel,
         onFrame: (fn) => patch.frame.push(fn),
         onRemove: (fn) => patch.cleanup.push(fn),
@@ -769,7 +687,7 @@
       }
     }
 
-    // Snapshot of the live scene for the server (GET /api/state): the chat box's scene state, plus the scene graph.
+    // The headset's scene state, streamed to the server: the chat box's scene state, plus the scene graph.
     const r3 = (v) => Math.round(v * 1000) / 1000;
     const ONE = new THREE.Vector3(1, 1, 1);
     function describe(o, depth = 0) {
@@ -803,55 +721,175 @@
     }
     Object.assign(window, { setPatch, removePatch, snapshot });
 
-    // The player streams where the head and controllers are, about 30 times a second.
+    // The headset streams where the head and controllers are (30×/s) and its scene state (10×/s).
     const poseV = new THREE.Vector3();
     const poseQ = new THREE.Quaternion();
     function worldPose(o) {
       return { p: o.getWorldPosition(poseV).toArray().map(r3), q: o.getWorldQuaternion(poseQ).toArray().map(r3) };
     }
-    let lastPoseSent = 0;
-    function sendPose(now) {
-      if (ROLE !== 'player' || now - lastPoseSent < 33) return;
-      lastPoseSent = now;
-      const pads = new Map([...(renderer.xr.getSession()?.inputSources ?? [])].map((s) => [s.handedness, s.gamepad]));
-      send({
-        type: 'pose',
-        t: r3(clock.elapsedTime),
-        presenting: renderer.xr.isPresenting,
-        fps: Math.round(fps),
-        head: { ...worldPose(camera), facing: camera.getWorldDirection(poseV).toArray().map(r3) },
-        rig: worldPose(rig),
-        controllers: renderer.xr.isPresenting ? controllers.filter((c) => c.visible && c.userData.hand).map((c) => {
-          const pad = pads.get(c.userData.hand);
-          return {
-            hand: c.userData.hand,
-            ...worldPose(c),
-            axes: pad ? [...pad.axes].map(r3) : [],
-            pressed: pad ? pad.buttons.flatMap((b, i) => (b.pressed ? [i] : [])) : [],
-          };
-        }) : [],
-      });
+    let lastPoseSent = 0, lastStateSent = 0;
+    function stream(now) {
+      if (ROLE !== 'headset') return;
+      if (now - lastPoseSent >= 33) {
+        lastPoseSent = now;
+        const pads = new Map([...(renderer.xr.getSession()?.inputSources ?? [])].map((s) => [s.handedness, s.gamepad]));
+        send({
+          type: 'pose',
+          t: r3(clock.elapsedTime),
+          presenting: renderer.xr.isPresenting,
+          fps: Math.round(fps),
+          head: { ...worldPose(camera), facing: camera.getWorldDirection(poseV).toArray().map(r3) },
+          rig: worldPose(rig),
+          controllers: renderer.xr.isPresenting ? controllers.filter((c) => c.visible && c.userData.hand).map((c) => {
+            const pad = pads.get(c.userData.hand);
+            return {
+              hand: c.userData.hand,
+              ...worldPose(c),
+              axes: pad ? [...pad.axes].map(r3) : [],
+              pressed: pad ? pad.buttons.flatMap((b, i) => (b.pressed ? [i] : [])) : [],
+            };
+          }) : [],
+        });
+      }
+      if (now - lastStateSent >= 100) {
+        lastStateSent = now;
+        send({ type: 'state', t: r3(clock.elapsedTime), ...snapshot() });
+      }
     }
 
-    // A mirror puts its camera where the player's head is, and shows the player's controllers as cones.
-    let playerPose = null; // latest pose from the player, plus `at`, the local time it arrived
-    const handMarkers = new Map();
-    function followPlayer() {
-      if (!playerPose) return;
-      camera.position.fromArray(playerPose.head.p); // the mirror's rig never moves, so world = rig space
-      camera.quaternion.fromArray(playerPose.head.q);
-      for (const marker of handMarkers.values()) marker.visible = false;
-      for (const c of playerPose.controllers) {
-        if (!handMarkers.has(c.hand)) {
-          const marker = new THREE.Mesh(new THREE.ConeGeometry(0.02, 0.1, 12).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x88ccff }));
-          handMarkers.set(c.hand, marker);
-          scene.add(marker);
+    // ---- Viewer ----
+    // A viewer draws the user as an avatar where the headset says their head and hands are, eases its copies of the
+    // headset's objects toward the headset's latest state, and either orbits around the user or looks through their eyes.
+    let headsetPose = null; // latest pose from the headset, plus `at`, the local time it arrived
+    let headsetState = null; // latest scene state from the headset
+    let viewMode = 'overview'; // or 'headset'
+    const tmpV = new THREE.Vector3();
+    const tmpQ = new THREE.Quaternion();
+    const tmpE = new THREE.Euler();
+
+    function makeAvatar() {
+      const avatar = new THREE.Group();
+      avatar.name = 'viewer:head';
+      avatar.position.set(0, EYE_HEIGHT, 0);
+      const skin = new THREE.MeshStandardMaterial({ color: 0x4fc3f7, roughness: 0.5 });
+      const skull = new THREE.Mesh(new THREE.SphereGeometry(0.11, 24, 16), skin);
+      skull.scale.set(1, 1.2, 1.15);
+      const visor = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.08, 0.08), new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.2 }));
+      visor.position.set(0, 0.015, -0.1); // on the -Z side, the way the camera looks
+      avatar.add(skull, visor);
+      // A see-through body from the floor to the neck, so you can tell where they're standing.
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.17, 1, 20), new THREE.MeshStandardMaterial({ color: 0x4fc3f7, transparent: true, opacity: 0.35 }));
+      body.name = 'viewer:body';
+      avatar.userData.body = body;
+      scene.add(avatar, body);
+      return avatar;
+    }
+
+    const hands = new Map(); // handedness -> cone
+    function updateAvatar(ease) {
+      if (!headsetPose) return;
+      head.position.lerp(tmpV.fromArray(headsetPose.head.p), ease);
+      head.quaternion.slerp(tmpQ.fromArray(headsetPose.head.q), ease);
+      const { body } = head.userData;
+      const neck = Math.max(0.1, head.position.y - 0.25);
+      body.position.set(head.position.x, neck / 2, head.position.z);
+      body.scale.y = neck;
+      head.visible = body.visible = viewMode === 'overview';
+      for (const cone of hands.values()) cone.visible = false;
+      for (const c of headsetPose.controllers) {
+        if (!hands.has(c.hand)) {
+          const cone = new THREE.Mesh(new THREE.ConeGeometry(0.025, 0.12, 12).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x4fc3f7 }));
+          cone.name = `viewer:hand-${c.hand}`;
+          cone.position.fromArray(c.p);
+          hands.set(c.hand, cone);
+          scene.add(cone);
         }
-        const marker = handMarkers.get(c.hand);
-        marker.position.fromArray(c.p);
-        marker.quaternion.fromArray(c.q);
-        marker.visible = true;
+        const cone = hands.get(c.hand);
+        cone.position.lerp(tmpV.fromArray(c.p), ease);
+        cone.quaternion.slerp(tmpQ.fromArray(c.q), ease);
+        cone.visible = true;
       }
+    }
+
+    // Ease a local object, and its descendants matched by their place in the tree, toward the headset's description.
+    function follow(object, node, ease) {
+      if (object.type !== node.type || object.isBone) return; // the trees differ here, or it's a skeleton (animated locally)
+      object.position.lerp(tmpV.fromArray(node.position ?? [0, 0, 0]), ease);
+      object.quaternion.slerp(tmpQ.setFromEuler(tmpE.fromArray(node.rotation ?? [0, 0, 0])), ease);
+      object.scale.lerp(tmpV.fromArray(node.scale ?? [1, 1, 1]), ease);
+      object.visible = node.visible !== false;
+      if (Array.isArray(node.children)) node.children.forEach((child, i) => object.children[i] && follow(object.children[i], child, ease));
+    }
+    function applyHeadsetState(ease) {
+      for (const node of headsetState?.graph.children ?? []) {
+        // Top-level objects are matched by name. The rig is the headset's own, and unnamed ones (lights) don't move.
+        if (!node.name || node.name === 'rig') continue;
+        const object = scene.children.find((c) => c.name === node.name);
+        if (object) follow(object, node, ease);
+      }
+    }
+
+    const viewToggle = document.getElementById('view-toggle');
+    const lastHead = new THREE.Vector3(0, EYE_HEIGHT, 0);
+    function setViewMode(mode) {
+      viewMode = mode;
+      viewToggle.textContent = mode === 'overview' ? "V: headset's view" : 'V: overview';
+      controls.enabled = mode === 'overview';
+      camera.fov = mode === 'overview' ? 70 : 90;
+      camera.updateProjectionMatrix();
+      if (mode === 'overview') {
+        // Start behind and above the user, looking at them. (The head looks down its -Z.)
+        const behind = head.getWorldDirection(tmpV).setY(0).normalize().multiplyScalar(3);
+        camera.position.copy(head.position).add(behind).setY(head.position.y + 1.5);
+        controls.target.copy(head.position);
+        controls.update();
+      }
+    }
+    function updateViewerCamera() {
+      if (viewMode === 'headset') {
+        camera.position.copy(head.position); // a viewer's rig never moves, so world = rig space
+        camera.quaternion.copy(head.quaternion);
+      } else {
+        // Keep the orbit centered on the user as they move.
+        tmpV.subVectors(head.position, lastHead);
+        camera.position.add(tmpV);
+        controls.target.add(tmpV);
+        controls.update();
+      }
+      lastHead.copy(head.position);
+    }
+
+    // The panel: headset status and performance, and the latest edits, from the server once a second.
+    const headsetStatusEl = document.getElementById('headset-status');
+    const recentEditsEl = document.getElementById('recent-edits');
+    async function refreshPanel() {
+      try {
+        const s = await (await fetch('/api/state?scene=0', { headers: { 'X-Host-Key': HOST_KEY } })).json();
+        const { connected, device, streaming, in_vr: inVR, performance: perf } = s.headset;
+        const parts = [!connected ? 'Headset: not connected'
+          : !streaming ? `Headset (${device}): connected but not sending, maybe asleep`
+          : `Headset (${device}): ${inVR ? 'in VR' : 'not in VR'}`];
+        if (streaming && perf && perf.age_ms < 3000) parts.push(`${perf.fps} fps`, `GPU ${perf.app_gpu_time}/frame (${Math.round(perf.gpu_utilization * 100)}% busy)`);
+        headsetStatusEl.textContent = parts.join(' · ');
+        const errors = s.errors.filter((e) => e.page === 'headset');
+        recentEditsEl.textContent = 'Recent edits: ' + (s.recent_edits.slice(-4).reverse().map((e) => `${e.time ?? ''} ${e.by}: ${e.edit}`.trim()).join(' · ') || 'none')
+          + (errors.length ? ` · Last error: ${errors.at(-1).message}` : '');
+      } catch {
+        headsetStatusEl.textContent = 'Headset: server unreachable';
+      }
+    }
+
+    if (ROLE === 'viewer') {
+      viewToggle.addEventListener('click', (e) => {
+        e.preventDefault();
+        setViewMode(viewMode === 'overview' ? 'headset' : 'overview');
+      });
+      window.addEventListener('keydown', (e) => {
+        if (e.code === 'KeyV' && !typing(e)) setViewMode(viewMode === 'overview' ? 'headset' : 'overview');
+      });
+      if (params.has('mirror')) setViewMode('headset');
+      refreshPanel();
+      setInterval(refreshPanel, 1000);
     }
 
     connect();
@@ -866,20 +904,23 @@
         frames = 0;
         fpsSince = now;
       }
-      // Mirrors run on the player's clock so time-based animations line up.
-      const t = ROLE === 'mirror' && playerPose ? playerPose.t + (performance.now() - playerPose.at) / 1000 : clock.elapsedTime;
-      if (ROLE === 'mirror') followPlayer();
+      // Viewers run on the headset's clock so time-based animations line up.
+      const t = ROLE === 'viewer' && headsetPose ? headsetPose.t + (performance.now() - headsetPose.at) / 1000 : clock.elapsedTime;
+      const ease = 1 - Math.exp(-dt * 15); // turns the headset's 10-30 updates a second into smooth motion
+      if (ROLE === 'viewer') updateAvatar(ease); // before patches, which may look at ctx.head
       animateEditables(t);
-      updateEye(t, dt);
       runPatches(dt, t);
-      if (renderer.xr.isPresenting) {
+      if (ROLE === 'viewer') {
+        applyHeadsetState(ease); // after patches, so the headset's state wins
+        updateViewerCamera();
+      } else if (renderer.xr.isPresenting) {
         handleControllers(dt);
-      } else if (ROLE === 'player') {
+      } else {
         handleKeyboard(dt);
         controls.update();
       }
       renderer.render(scene, camera);
-      sendPose(now); // after rendering, which is when three.js copies the headset pose onto the camera
+      stream(now); // after rendering, which is when three.js copies the headset pose onto the camera
     });
   </script>
 </body>
