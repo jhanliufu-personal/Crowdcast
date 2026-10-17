@@ -56,6 +56,7 @@
   <script type="module">
     import * as THREE from 'three';
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
     import { VRButton } from 'three/addons/webxr/VRButton.js';
     import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
@@ -90,10 +91,12 @@
     }
 
     // Change this to preview a different scene, or pass ?scene=path/to/file.gltf
-    const SCENE_URL = params.get('scene') || 'library/scene.gltf';
+    // library/library.glb is library/scene.gltf compressed (8 MB instead of 28 MB, so it loads over slow Wi-Fi):
+    //   npx @gltf-transform/cli optimize library/scene.gltf library/library.glb --compress meshopt --texture-compress webp --simplify false
+    const SCENE_URL = params.get('scene') || 'library/library.glb';
     // How much to enlarge a model so that 1 unit = 1 meter, and you're life-sized in it. The library comes in
     // about 4.5× too small: its shelves are 8 cm apart (real ones are ~35 cm) and its gallery rail is 20 cm tall (~0.9 m).
-    const SCENE_SCALES = { 'library/scene.gltf': 4.5 };
+    const SCENE_SCALES = { 'library/scene.gltf': 4.5, 'library/library.glb': 4.5 };
     const WORLD_SCALE = SCENE_SCALES[SCENE_URL] ?? 1;
     const EYE_HEIGHT = 1.6; // meters, desktop camera only; in VR the headset supplies height
     const MOVE_SPEED = 1.5; // meters per second
@@ -409,7 +412,7 @@
     // For testing edits without the LLM from the console, and seeing exactly what the LLM is sent.
     Object.assign(window, { applyCommands, sceneState });
 
-    const gltfLoader = new GLTFLoader();
+    const gltfLoader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder); // for compressed models like library.glb
     let worldModel = null;
     let worldLoaded;
     const worldReady = new Promise((resolve) => (worldLoaded = resolve)); // settles once the room has loaded or failed

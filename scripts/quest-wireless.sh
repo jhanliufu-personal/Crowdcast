@@ -28,5 +28,6 @@ if ! adb devices | grep -q "^$IP:5555[[:space:]]*device"; then
   echo "Connected to $IP but not authorized: accept the debugging prompt in the headset, then run this again." >&2
   exit 1
 fi
+adb -s "$IP:5555" reverse --remove tcp:"$PORT" 2>/dev/null || true
 adb -s "$IP:5555" reverse tcp:"$PORT" tcp:"$PORT"
 echo "Quest at $IP over Wi-Fi. In its browser, open http://localhost:$PORT (you can unplug the cable)."

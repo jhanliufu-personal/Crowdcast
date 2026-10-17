@@ -365,21 +365,37 @@ def adb_devices():
     return [line.split()[0] for line in (adb("devices") or "").splitlines()[1:] if line.endswith("\tdevice")]
 
 
+def refresh_quest_forward(port, previous_serials):
+    """One headset can have two transports, but its reverse listener is shared.
+
+    A listed listener may still belong to a dead Wi-Fi transport. Recreate it when
+    transports change; prefer USB while plugged in, then Wi-Fi after unplugging.
+    """
+    serials = tuple(sorted(adb_devices()))
+    if serials:
+        serial = next((s for s in serials if ":" not in s), serials[0])
+        mapping = f"tcp:{port} tcp:{port}"
+        if serials != previous_serials or mapping not in (adb("-s", serial, "reverse", "--list") or ""):
+            adb("-s", serial, "reverse", "--remove", f"tcp:{port}")
+            adb("-s", serial, "reverse", f"tcp:{port}", f"tcp:{port}")
+    return serials
+
+
 def keep_quest_forwarded(port):
     """Keep the Quest's localhost:PORT forwarded to this server (adb reverse), over USB or Wi-Fi. adb drops the
     forward whenever it re-makes its connection (cable unplugged, Wi-Fi blip, Quest waking up), so check often.
     It also forgets Wi-Fi devices when its own server restarts, so reconnect any it has listed before."""
     if adb("version") is None:
         return
-    wifi = set()  # Wi-Fi serials ("ip:port") seen so far
+    wifi = set()  # Wi-Fi serials ("ip:port") seen so far, including offline entries
+    previous_serials = None
     while True:
-        serials = adb_devices()
-        wifi.update(s for s in serials if ":" in s)
-        for serial in wifi - set(serials):
+        # Repair the working transport before a potentially slow Wi-Fi reconnect.
+        previous_serials = refresh_quest_forward(port, previous_serials)
+        listed = (adb("devices") or "").splitlines()[1:]
+        wifi.update(line.split()[0] for line in listed if line.split() and ":" in line.split()[0])
+        for serial in wifi - set(previous_serials):
             adb("connect", serial)
-        for serial in adb_devices():
-            if f"tcp:{port} tcp:{port}" not in adb("-s", serial, "reverse", "--list"):
-                adb("-s", serial, "reverse", f"tcp:{port}", f"tcp:{port}")
         time.sleep(3)
 
 
@@ -434,8 +450,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().log_message(format, *(re.sub(r"\b(token|key)=[^&\s\"]+", r"\1=…", a) if isinstance(a, str) else a for a in args))
 
     def end_headers(self):
-        # Always serve fresh files so edits show up on reload.
-        self.send_header("Cache-Control", "no-store")
+        # Browsers may keep files, but must check they're unchanged before using them (a cheap 304 Not Modified,
+        # via Last-Modified), so edits show up on reload and the 27 MB room isn't downloaded again every time.
+        self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 
     def same_origin(self):

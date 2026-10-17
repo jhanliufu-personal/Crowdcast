@@ -80,6 +80,15 @@ The server listens on every network interface so phones can join. Patches run co
 
 Without `--https`, the Quest can still reach the server over USB with `adb reverse tcp:8000 tcp:8000` and then `http://localhost:8000` (WebXR needs localhost or HTTPS). Over `adb reverse` its requests arrive from localhost, so it needs no key.
 
+For wireless development, connect the Quest by USB once and run `scripts/quest-wireless.sh`, then unplug
+and open **`http://localhost:8000/`** in Quest Browser. Include `http://`: this port does not speak HTTPS.
+The server repairs forwarding when USB or Wi-Fi disconnects, preferring USB while it is attached and
+switching to wireless when it is removed. Run the setup script again after the headset reboots.
+Phones use the printed `http://<lan-ip>:8000/audience/` URL; `localhost` on a phone means the phone itself.
+Guest Wi-Fi can block communication between devices even when they share a network name and subnet.
+If local access times out, use a network that allows device-to-device traffic, or ask its administrator
+to permit it. HTTPS alone cannot fix a blocked network path.
+
 **LLM settings** (environment variables read by `scene_agent.py`)
 
 | Variable | Default | Meaning |
