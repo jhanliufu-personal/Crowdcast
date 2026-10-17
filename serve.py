@@ -339,18 +339,46 @@ class Hub:
         return {k: self.scene[k] for k in ("room", "user", "shapes", "animations", "objects") if k in self.scene}
 
 
+def adb(*args):
+    """Run an adb command and return its output ("" if it fails); None if there's no adb on this machine."""
+    try:
+        return subprocess.run(["adb", *args], capture_output=True, text=True, timeout=10).stdout
+    except FileNotFoundError:
+        return None
+    except subprocess.TimeoutExpired:
+        return ""
+
+
+def adb_devices():
+    """Serials of the connected, authorized devices. The same Quest can be listed twice (USB and Wi-Fi)."""
+    return [line.split()[0] for line in (adb("devices") or "").splitlines()[1:] if line.endswith("\tdevice")]
+
+
+def keep_quest_forwarded(port):
+    """Keep the Quest's localhost:PORT forwarded to this server (adb reverse), over USB or Wi-Fi. adb drops the
+    forward whenever it re-makes its connection (cable unplugged, Wi-Fi blip, Quest waking up), so check often.
+    It also forgets Wi-Fi devices when its own server restarts, so reconnect any it has listed before."""
+    if adb("version") is None:
+        return
+    wifi = set()  # Wi-Fi serials ("ip:port") seen so far
+    while True:
+        serials = adb_devices()
+        wifi.update(s for s in serials if ":" in s)
+        for serial in wifi - set(serials):
+            adb("connect", serial)
+        for serial in adb_devices():
+            if f"tcp:{port} tcp:{port}" not in adb("-s", serial, "reverse", "--list"):
+                adb("-s", serial, "reverse", f"tcp:{port}", f"tcp:{port}")
+        time.sleep(3)
+
+
 def watch_headset(hub):
     """Keep the Quest's latest performance stats, which its VR runtime logs once a second, while adb can reach it.
     They describe whatever is in front of the user: our page while it's in VR, otherwise the Quest's home screen."""
+    if adb("version") is None:
+        return  # no adb on this machine
     while True:
-        try:
-            devices = subprocess.run(["adb", "devices"], capture_output=True, text=True, timeout=10).stdout
-        except FileNotFoundError:
-            return  # no adb on this machine
-        except subprocess.TimeoutExpired:
-            devices = ""
-        # The same Quest can be listed twice (USB and Wi-Fi), and adb refuses to pick, so name one.
-        serials = [line.split()[0] for line in devices.splitlines()[1:] if line.endswith("\tdevice")]
+        serials = adb_devices()  # adb refuses to pick between two, so name one
         if not serials:
             time.sleep(5)
             continue
@@ -571,8 +599,8 @@ def main():
         print(f"Quest:    https://{ip}:{port}/#key={host_key}   (same Wi-Fi; accept the certificate warning)")
     else:
         print(f"Viewer:   http://localhost:{port}")
-        print(f"Quest:    plug in USB, run `adb reverse tcp:{port} tcp:{port}`, then open http://localhost:{port}")
-        print("          (or restart with --https to use Wi-Fi)")
+        print(f"Quest:    http://localhost:{port}, over USB or Wi-Fi adb (scripts/quest-wireless.sh); this server keeps")
+        print(f"          the Quest's port {port} forwarded with adb reverse. Or restart with --https to skip adb.")
     base = f"{'https' if args.https else 'http'}://{ip}:{port}"
     print(f"Audience: {base}/audience/   (phones on the same network{'' if args.https else '; WebXR still needs HTTPS or localhost'})")
     print(f"Host:     {base}/host/#key={host_key}   (roster, live queue, start / reset)")
@@ -581,6 +609,7 @@ def main():
     print(f"State:    curl -s localhost:{port}/api/state   (game: /api/game/state)")
     print(f"Scene:    {len(hub.ops)} edits from scenes/{hub.source}")
     threading.Thread(target=watch_headset, args=(hub,), daemon=True).start()
+    threading.Thread(target=keep_quest_forwarded, args=(port,), daemon=True).start()
 
     try:
         server.serve_forever()
