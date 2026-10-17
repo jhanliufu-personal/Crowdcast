@@ -1,0 +1,11 @@
+Model Information:
+* title:	library
+* source:	https://sketchfab.com/3d-models/library-7fc61f0d65ee49d0b2904e85d1fa520e
+* author:	Pasha (https://sketchfab.com/Pasha.)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "library" (https://sketchfab.com/3d-models/library-7fc61f0d65ee49d0b2904e85d1fa520e) by Pasha (https://sketchfab.com/Pasha.) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
