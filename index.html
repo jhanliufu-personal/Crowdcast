@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WorldTinder — WebXR preview</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #111; font-family: system-ui, sans-serif; }
+    #info {
+      position: absolute; top: 10px; left: 10px; color: #ddd; font-size: 12px; line-height: 1.5;
+      background: rgba(0, 0, 0, 0.55); padding: 8px 10px; border-radius: 6px; pointer-events: none;
+    }
+    #info a { color: #9cf; pointer-events: auto; }
+    #chat {
+      position: absolute; left: 10px; bottom: 60px; width: 340px; color: #eee; font-size: 13px;
+      background: rgba(0, 0, 0, 0.6); border-radius: 8px; padding: 8px;
+    }
+    #chat-log { max-height: 220px; overflow-y: auto; margin-bottom: 6px; line-height: 1.4; }
+    #chat-log .user { color: #fff; font-weight: 600; margin-top: 6px; }
+    #chat-log .assistant { color: #cde; }
+    #chat-log .meta { color: #888; font-size: 11px; }
+    #chat-log .error { color: #f99; }
+    #chat-input { width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 5px; border: 1px solid #555; background: #222; color: #eee; }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="info">
+    <div id="status">Loading scene…</div>
+    <div>Desktop: drag to look · WASD/arrows to move · Q/E down/up · B to add a book</div>
+    <div>VR: left stick to move · right stick to snap-turn · trigger to add a book</div>
+    <div>No headset? Open <a href="?emulate">?emulate</a> for an emulated Quest 3</div>
+    <div>Model: <a href="https://sketchfab.com/3d-models/library-7fc61f0d65ee49d0b2904e85d1fa520e" target="_blank">"library"</a>
+      by <a href="https://sketchfab.com/Pasha." target="_blank">Pasha</a>, CC-BY-4.0</div>
+  </div>
+
+  <div id="chat">
+    <div id="chat-log"><div class="meta">Ask Claude to edit the scene, e.g. "put three blue spheres in front of me", "make the cube green", "remove the books".</div></div>
+    <form id="chat-form"><input id="chat-input" autocomplete="off" placeholder="Edit the scene…" /></form>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { VRButton } from 'three/addons/webxr/VRButton.js';
+    import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+    const params = new URLSearchParams(location.search);
+
+    // ?emulate swaps in Meta's emulated Quest 3 (IWER) so "Enter VR" works on a Mac without a headset.
+    // It must be installed before the VR button checks for WebXR support. Never loaded on the real headset.
+    let xrDevice = null;
+    if (params.has('emulate')) {
+      // Same iwer URL that @iwer/devui imports internally, so both share one copy of the runtime.
+      const { XRDevice, metaQuest3 } = await import('https://esm.sh/iwer@^2.5.0?target=es2022');
+      xrDevice = new XRDevice(metaQuest3);
+      // Desktop Chrome has a native navigator.xr (with no headset behind it); force the emulator to replace it.
+      xrDevice.installRuntime({ forceInstall: true });
+      window.xrDevice = xrDevice; // handy for poking the emulated device from the console
+      try {
+        // On-screen controls for moving the emulated headset and pressing controller buttons.
+        const { DevUI } = await import('https://esm.sh/@iwer/devui@2.6.0?target=es2022');
+        new DevUI(xrDevice);
+      } catch (err) {
+        console.warn('Emulator controls failed to load; the emulated headset still works.', err);
+      }
+    }
+
+    // Change this to preview a different scene, or pass ?scene=path/to/file.gltf
+    const SCENE_URL = params.get('scene') || 'library/scene.gltf';
+    const EYE_HEIGHT = 1.6; // meters, desktop camera only; in VR the headset supplies height
+    const MOVE_SPEED = 1.5; // meters per second
+    const SNAP_TURN = Math.PI / 6;
+
+    const statusEl = document.getElementById('status');
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.xr.enabled = true;
+    document.body.appendChild(renderer.domElement);
+    document.body.appendChild(VRButton.createButton(renderer));
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x202024);
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.0));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+    sun.position.set(3, 6, 2);
+    scene.add(sun);
+
+    // The rig is what we move around; the camera (and the headset in VR) lives inside it.
+    const rig = new THREE.Group();
+    scene.add(rig);
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 200);
+    camera.position.set(0, EYE_HEIGHT, 0);
+    rig.add(camera);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.enablePan = false;
+    // Tiny orbit radius around a point just ahead of the eye = first-person "look around".
+    controls.target.set(0, EYE_HEIGHT, -0.01);
+    controls.update();
+
+    // Editable objects: everything you can add, change or remove at runtime (by trigger, key or chat) lives here.
+    // Each object is a named group in the scene graph plus a small spec describing it:
+    //   { name, shape, color, size, position: [x, y, z], animation, glow }
+    // The spec is also what gets sent to the LLM as "scene state", and what its tool calls edit.
+    const SHAPES = ['box', 'sphere', 'cylinder', 'cone', 'torus', 'book'];
+    const ANIMATIONS = ['none', 'float', 'spin', 'orbit'];
+    const editables = new Map(); // name -> THREE.Group
+    const roomSize = new THREE.Vector3(4, 3, 4); // replaced with the real size once the room loads
+
+    // Each shape is built at a largest dimension of 1 m, then scaled to the requested size.
+    function makeShape(shape, material) {
+      if (shape === 'book') {
+        const book = new THREE.Group();
+        book.add(new THREE.Mesh(new THREE.BoxGeometry(0.73, 0.16, 1), material));
+        const pages = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.12, 0.95), new THREE.MeshStandardMaterial({ color: 0xf2ead3, roughness: 0.9 }));
+        pages.position.x = 0.03; // inset from the spine side
+        book.add(pages);
+        return book;
+      }
+      const geometry = {
+        box: () => new THREE.BoxGeometry(1, 1, 1),
+        sphere: () => new THREE.SphereGeometry(0.5, 32, 16),
+        cylinder: () => new THREE.CylinderGeometry(0.3, 0.3, 1, 32),
+        cone: () => new THREE.ConeGeometry(0.4, 1, 32),
+        torus: () => new THREE.TorusGeometry(0.35, 0.15, 16, 48),
+      }[shape]();
+      return new THREE.Mesh(geometry, material);
+    }
+
+    function cleanSpec(input, base = {}) {
+      const spec = { ...base };
+      if (typeof input.name === 'string' && input.name) spec.name = input.name;
+      if (SHAPES.includes(input.shape)) spec.shape = input.shape;
+      if (typeof input.color === 'string') { try { spec.color = '#' + new THREE.Color(input.color).getHexString(); } catch {} }
+      if (Number.isFinite(input.size)) spec.size = THREE.MathUtils.clamp(input.size, 0.03, 3);
+      if (Array.isArray(input.position) && input.position.length === 3 && input.position.every(Number.isFinite)) spec.position = input.position.map(Number);
+      if (ANIMATIONS.includes(input.animation)) spec.animation = input.animation;
+      if (typeof input.glow === 'boolean') spec.glow = input.glow;
+      return spec;
+    }
+
+    function applyLook(group) {
+      const { color, size, glow } = group.userData.spec;
+      const material = group.userData.material;
+      material.color.set(color);
+      material.emissive.set(glow ? color : 0x000000);
+      material.emissiveIntensity = glow ? 0.6 : 0;
+      group.userData.inner.scale.setScalar(size);
+      if (glow && !group.userData.light) {
+        group.userData.light = new THREE.PointLight(color, 2, 3);
+        group.add(group.userData.light);
+      } else if (!glow && group.userData.light) {
+        group.remove(group.userData.light);
+        group.userData.light.dispose();
+        group.userData.light = null;
+      }
+      if (group.userData.light) group.userData.light.color.set(color);
+    }
+
+    function addObject(input) {
+      const spec = cleanSpec(input, { name: 'object', shape: 'box', color: '#cccccc', size: 0.3, position: [0, 1.4, -1], animation: 'none', glow: false });
+      let name = spec.name, n = 2;
+      while (editables.has(name)) name = `${spec.name}-${n++}`;
+      spec.name = name;
+      const material = new THREE.MeshStandardMaterial({ roughness: 0.5 });
+      const inner = makeShape(spec.shape, material);
+      const group = new THREE.Group();
+      group.add(inner);
+      group.userData = { spec, material, inner, light: null, phase: Math.random() * Math.PI * 2 };
+      applyLook(group);
+      group.position.fromArray(spec.position);
+      scene.add(group); // this is the whole "add to the world" step; it shows up on the next frame
+      editables.set(name, group);
+      return name;
+    }
+
+    function updateObject(input) {
+      const group = editables.get(input.name);
+      if (!group) return false;
+      const { name, shape, ...changes } = input; // name and shape can't change
+      group.userData.spec = cleanSpec(changes, group.userData.spec);
+      applyLook(group);
+      return true;
+    }
+
+    function removeObject(name) {
+      const names = name === '*' ? [...editables.keys()] : [name];
+      let removed = 0;
+      for (const n of names) {
+        const group = editables.get(n);
+        if (!group) continue;
+        scene.remove(group);
+        group.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); });
+        group.userData.light?.dispose();
+        editables.delete(n);
+        removed++;
+      }
+      return removed;
+    }
+
+    function animateEditables(t) {
+      const orbitRadius = Math.min(1.2, 0.35 * Math.min(roomSize.x, roomSize.z));
+      for (const group of editables.values()) {
+        const { spec, phase } = group.userData;
+        const [x, y, z] = spec.position;
+        switch (spec.animation) {
+          case 'float': // gentle bob and slow turn around its spot
+            group.position.set(x, y + Math.sin(t * 1.2 + phase) * 0.05, z);
+            group.rotation.set(0.3, t * 0.6 + phase, 0.15);
+            break;
+          case 'spin':
+            group.position.set(x, y, z);
+            group.rotation.set(0, t * 1.5, 0);
+            break;
+          case 'orbit': // circle around its position, bob up and down, tumble (the original cube's motion)
+            group.position.set(x + Math.cos(t * 0.5) * orbitRadius, y + Math.sin(t * 1.5) * 0.25, z + Math.sin(t * 0.5) * orbitRadius);
+            group.rotation.set(t * 0.7, t, 0);
+            break;
+          default:
+            group.position.set(x, y, z);
+            group.rotation.set(0, 0, 0);
+        }
+      }
+    }
+
+    // The glowing cube from before, now just an editable object with the 'orbit' animation.
+    addObject({ name: 'orange-cube', shape: 'box', color: '#ff5533', size: 0.25, position: [0, 1.4, 0], animation: 'orbit', glow: true });
+
+    // Each trigger press (or B on desktop) adds a floating book 40 cm in front of whatever is pointing.
+    const spawnPos = new THREE.Vector3();
+    const spawnDir = new THREE.Vector3();
+    function spawnInFrontOf(object3d, distance) {
+      object3d.getWorldPosition(spawnPos);
+      // Cameras report the direction they look along; other objects (like controllers) report their +Z axis,
+      // which points backwards since they aim down -Z.
+      object3d.getWorldDirection(spawnDir);
+      spawnPos.addScaledVector(spawnDir, object3d.isCamera ? distance : -distance);
+      const name = addObject({ name: 'book', shape: 'book', color: '#7a1f1f', size: 0.22, position: spawnPos.toArray(), animation: 'float' });
+      statusEl.textContent = `Added ${name} (${editables.size} objects)`;
+    }
+
+    // Controllers live inside the rig so they move with thumbstick locomotion.
+    // A short line shows where each one points (no controller models are loaded).
+    const pointerGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -0.4)]);
+    for (let i = 0; i < 2; i++) {
+      const controller = renderer.xr.getController(i);
+      controller.add(new THREE.Line(pointerGeo, new THREE.LineBasicMaterial({ color: 0x88ccff })));
+      controller.addEventListener('selectstart', () => spawnInFrontOf(controller, 0.4));
+      rig.add(controller);
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'KeyB' && !typing(e) && !renderer.xr.isPresenting) spawnInFrontOf(camera, 1.0);
+    });
+
+    // Chat box: send the message plus the current scene state to serve.py, which asks Claude for tool calls
+    // (add_object / update_object / remove_object). Those come back here and are applied to the scene graph.
+    const chatLog = document.getElementById('chat-log');
+    const chatForm = document.getElementById('chat-form');
+    const chatInput = document.getElementById('chat-input');
+    const round = (v) => Math.round(v * 100) / 100;
+
+    function sceneState() {
+      const head = (renderer.xr.isPresenting ? renderer.xr.getCamera() : camera);
+      const pos = head.getWorldPosition(new THREE.Vector3());
+      const dir = head.getWorldDirection(new THREE.Vector3());
+      dir.y = 0;
+      dir.normalize();
+      return {
+        room: { width_x: round(roomSize.x), height_y: round(roomSize.y), depth_z: round(roomSize.z), floor_y: 0, center: [0, 0, 0] },
+        user: { head_position: pos.toArray().map(round), facing: dir.toArray().map(round) },
+        shapes: SHAPES,
+        animations: ANIMATIONS,
+        objects: [...editables.values()].map((g) => ({ ...g.userData.spec, position: g.userData.spec.position.map(round) })),
+      };
+    }
+
+    function applyCommands(commands) {
+      const done = [];
+      for (const { name, input } of commands) {
+        if (name === 'add_object') done.push(`added ${addObject(input)}`);
+        else if (name === 'update_object') done.push(updateObject(input) ? `updated ${input.name}` : `no object named ${input.name}`);
+        else if (name === 'remove_object') done.push(`removed ${removeObject(input.name)} object(s)`);
+      }
+      return done;
+    }
+
+    function logChat(role, text) {
+      const line = document.createElement('div');
+      line.className = role;
+      line.textContent = text;
+      chatLog.appendChild(line);
+      chatLog.scrollTop = chatLog.scrollHeight;
+      return line;
+    }
+
+    chatForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const message = chatInput.value.trim();
+      if (!message) return;
+      chatInput.value = '';
+      logChat('user', message);
+      const pending = logChat('meta', 'thinking…');
+      const started = performance.now();
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message, scene: sceneState() }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        const done = applyCommands(data.commands);
+        const total = Math.round(performance.now() - started);
+        pending.remove();
+        logChat('assistant', data.text || done.join(', ') || '(no changes)');
+        logChat('meta', `${done.join(', ') || 'no tool calls'} · model ${data.ms} ms, total ${total} ms · ${data.model}`);
+      } catch (err) {
+        pending.remove();
+        logChat('error', `Error: ${err.message}`);
+      }
+    });
+    // For testing edits without the LLM from the console, and seeing exactly what the LLM is sent.
+    Object.assign(window, { applyCommands, sceneState });
+
+    new GLTFLoader().load(
+      SCENE_URL,
+      (gltf) => {
+        const model = gltf.scene;
+        // Put the floor at y=0 and the room's center at the origin, where the user stands.
+        const box = new THREE.Box3().setFromObject(model);
+        const center = box.getCenter(new THREE.Vector3());
+        model.position.x -= center.x;
+        model.position.z -= center.z;
+        model.position.y -= box.min.y;
+        scene.add(model);
+        const size = box.getSize(new THREE.Vector3());
+        roomSize.copy(size);
+        statusEl.textContent = `Loaded ${SCENE_URL} — ${size.x.toFixed(2)} × ${size.y.toFixed(2)} × ${size.z.toFixed(2)} m (W×H×D)`;
+      },
+      (xhr) => {
+        if (xhr.total) statusEl.textContent = `Loading scene… ${Math.round((xhr.loaded / xhr.total) * 100)}%`;
+      },
+      (err) => {
+        statusEl.textContent = `Failed to load ${SCENE_URL}: ${err.message || err}`;
+        console.error(err);
+      }
+    );
+
+    // Desktop keyboard movement
+    const keys = new Set();
+    const typing = (e) => e.target instanceof HTMLInputElement;
+    window.addEventListener('keydown', (e) => { if (!typing(e)) keys.add(e.code); });
+    window.addEventListener('keyup', (e) => keys.delete(e.code));
+
+    const forward = new THREE.Vector3();
+    const right = new THREE.Vector3();
+    const up = new THREE.Vector3(0, 1, 0);
+    let snapReady = true;
+
+    function moveRig(dx, dz, dy, dt) {
+      // dx/dz are relative to where the (headset) camera is looking, flattened onto the floor.
+      const xrCam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+      xrCam.getWorldDirection(forward);
+      forward.y = 0;
+      if (forward.lengthSq() < 1e-6) return;
+      forward.normalize();
+      right.crossVectors(forward, up);
+      const step = MOVE_SPEED * dt;
+      const delta = new THREE.Vector3()
+        .addScaledVector(forward, dz * step)
+        .addScaledVector(right, dx * step)
+        .addScaledVector(up, dy * step);
+      if (renderer.xr.isPresenting) {
+        rig.position.add(delta);
+      } else {
+        // On desktop the rig stays at the origin; move the camera and its look target together.
+        camera.position.add(delta);
+        controls.target.add(delta);
+      }
+    }
+
+    function handleKeyboard(dt) {
+      const dx = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
+      const dz = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
+      const dy = (keys.has('KeyE') ? 1 : 0) - (keys.has('KeyQ') ? 1 : 0);
+      if (dx || dz || dy) moveRig(dx, dz, dy, dt);
+    }
+
+    function handleControllers(dt) {
+      const session = renderer.xr.getSession();
+      if (!session) return;
+      for (const source of session.inputSources) {
+        const gp = source.gamepad;
+        if (!gp || gp.axes.length < 4) continue;
+        const ax = gp.axes[2], ay = gp.axes[3]; // thumbstick on xr-standard gamepads
+        if (source.handedness === 'left') {
+          if (Math.abs(ax) > 0.15 || Math.abs(ay) > 0.15) moveRig(ax, -ay, 0, dt);
+        } else if (source.handedness === 'right') {
+          if (snapReady && Math.abs(ax) > 0.7) {
+            // Rotate the rig around the headset's position so the user turns in place.
+            const head = renderer.xr.getCamera().getWorldPosition(new THREE.Vector3());
+            const angle = ax > 0 ? -SNAP_TURN : SNAP_TURN;
+            rig.position.sub(head).applyAxisAngle(up, angle).add(head);
+            rig.rotation.y += angle;
+            snapReady = false;
+          } else if (Math.abs(ax) < 0.3) {
+            snapReady = true;
+          }
+        }
+      }
+    }
+
+    // OrbitControls and the desktop eye height only apply outside VR.
+    renderer.xr.addEventListener('sessionstart', () => {
+      controls.enabled = false;
+      rig.position.set(camera.position.x, 0, camera.position.z);
+      camera.position.set(0, 0, 0);
+    });
+    renderer.xr.addEventListener('sessionend', () => {
+      camera.position.set(rig.position.x, EYE_HEIGHT, rig.position.z);
+      controls.target.set(camera.position.x, EYE_HEIGHT, camera.position.z - 0.01);
+      rig.position.set(0, 0, 0);
+      rig.rotation.set(0, 0, 0);
+      controls.enabled = true;
+    });
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    const clock = new THREE.Clock();
+    renderer.setAnimationLoop(() => {
+      const dt = Math.min(clock.getDelta(), 0.1);
+      animateEditables(clock.elapsedTime);
+      if (renderer.xr.isPresenting) {
+        handleControllers(dt);
+      } else {
+        handleKeyboard(dt);
+        controls.update();
+      }
+      renderer.render(scene, camera);
+    });
+  </script>
+</body>
+</html>
