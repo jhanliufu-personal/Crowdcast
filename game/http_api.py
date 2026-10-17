@@ -1,9 +1,9 @@
 """HTTP routes for the game: small JSON endpoints plus one Server-Sent Events stream per client.
 
-serve.py hands every /api/ request except /api/chat to GameAPI.handle().
+serve.py hands every /api/ request except its scene routes (/ws, /api/state, /api/chat, …) to GameAPI.handle().
 
     GET  /api/catalog                  building blocks for the web app's buttons
-    GET  /api/state                    game state snapshot
+    GET  /api/game/state               game state snapshot (serve.py's /api/state is the live scene)
     POST /api/join          {name}     → {token, member, requests, cooldown_s}
     GET  /api/me            (token)    → {member, requests, cooldown_s}
     POST /api/spells        {parts}    (token) → the queued request
@@ -36,7 +36,7 @@ class GameAPI:
         self.host_key = host_key
         self.routes = {
             ("GET", "/api/catalog"): self.catalog,
-            ("GET", "/api/state"): self.state,
+            ("GET", "/api/game/state"): self.state,
             ("POST", "/api/join"): self.join,
             ("GET", "/api/me"): self.me,
             ("POST", "/api/spells"): self.spells,

@@ -472,7 +472,7 @@ The server keeps a few **pre-forged fallback spells** ready so the scene never g
 |---|---|---|
 | `POST /api/chat` | — | `{ message, scene }` → `{ commands, text, model, ms }` (the scene editor chat box) |
 | `GET /api/catalog` | — | → `shared/catalog.json` |
-| `GET /api/state` | — | → game state: `phase`, `remaining_s`, `cracks`, `charge`, `scores`, `teams`, `queue` counts per tier, `ready`, `in_flight` spells, `orbs`, `forge_online` |
+| `GET /api/game/state` | — | → game state: `phase`, `remaining_s`, `cracks`, `charge`, `scores`, `teams`, `queue` counts per tier, `ready`, `in_flight` spells, `orbs`, `forge_online` |
 | `POST /api/join` | — | `{ name }` → `{ token, member, requests, cooldown_s }` |
 | `GET /api/me` | `X-Token` | → `{ member, requests, cooldown_s }` |
 | `POST /api/spells` | `X-Token` | `{ parts }` → `{ request, member, requests, cooldown_s }`; 429 with `retry_after` while cooling down |
