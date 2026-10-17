@@ -53,6 +53,11 @@ The game server (game/) handles the other /api/ routes (see game/http_api.py); t
 /control/ puts the live scene and the host view side by side on the laptop; GET /api/links gives pages the
 audience URL (with this machine's network address).
 
+To reach phones and the Quest over the internet instead (when the Wi-Fi keeps devices apart), run
+`--public-port 8080 --public-url https://<this machine>.<tailnet>.ts.net:8443` and point a tunnel at port 8080:
+`tailscale funnel --bg --https=8443 http://127.0.0.1:8080`. Never point a tunnel at the main port: its requests
+come from this machine, which the main port trusts with the scene routes; the public door doesn't.
+
 Patches run code in the pages, so /ws, /api/chat and the scene routes above only answer requests from this
 machine (which includes the Quest over USB with adb reverse), or ones carrying the host key: an X-Host-Key
 header, or ?key= on the WebSocket. Open the scene with #key=HOST_KEY to pass it from the Quest over Wi-Fi.
@@ -409,6 +414,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     game_api = None  # set in main()
     host_key = None  # set in main()
     links = {}  # set in main()
+    trust_local = True  # requests from this machine get the scene routes without the host key
     extensions_map = {
         **http.server.SimpleHTTPRequestHandler.extensions_map,
         ".gltf": "model/gltf+json",
@@ -433,7 +439,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def scene_allowed(self, url):
         """Scene routes run code in the pages: only this machine (and the Quest over adb reverse), or the host key."""
-        if self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+        if self.trust_local and self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
             return True
         key = self.headers.get("X-Host-Key") or parse_qs(url.query).get("key", [""])[0]
         return bool(self.host_key) and hmac.compare_digest(key.encode(), self.host_key.encode())
@@ -544,6 +550,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(payload)
 
 
+class PublicHandler(Handler):
+    """The public door (--public-port), for a tunnel such as Tailscale Funnel to point at. A tunnel's requests
+    come from this machine, so here they aren't trusted: the scene routes need the host key like any other."""
+
+    trust_local = False
+
+
 def lan_ip():
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         try:
@@ -575,6 +588,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--https", action="store_true", help="serve over HTTPS with a self-signed cert (for the Quest over Wi-Fi)")
     parser.add_argument("--port", type=int, help="port (default 8000, or 8443 with --https)")
+    parser.add_argument("--public-port", type=int, default=os.environ.get("WORLDTINDER_PUBLIC_PORT"),
+                        help="also listen on 127.0.0.1:PORT as the public door, for a tunnel to point at (e.g. 8080)")
+    parser.add_argument("--public-url", default=os.environ.get("WORLDTINDER_PUBLIC_URL"),
+                        help="the tunnel's public address, given to phones (e.g. https://mac.tailnet.ts.net:8443)")
     args = parser.parse_args()
 
     hub = Hub()
@@ -605,7 +622,14 @@ def main():
     print(f"Audience: {base}/audience/   (phones on the same network{'' if args.https else '; WebXR still needs HTTPS or localhost'})")
     print(f"Host:     {base}/host/#key={host_key}   (roster, live queue, start / reset)")
     print(f"Control:  http://localhost:{port}/control/#key={host_key}   (the live scene and the host view side by side)")
-    Handler.links = {"audience": f"{base}/audience/"}
+    public_url = (args.public_url or "").rstrip("/")
+    Handler.links = {"audience": f"{public_url or base}/audience/"}
+    if args.public_port:
+        public = http.server.ThreadingHTTPServer(("127.0.0.1", int(args.public_port)), functools.partial(PublicHandler, directory=str(ROOT)))
+        threading.Thread(target=public.serve_forever, daemon=True).start()
+        print(f"Public:   127.0.0.1:{args.public_port} for a tunnel{f' at {public_url}' if public_url else ''}; there the scene routes need the host key")
+    if public_url:
+        print(f"          phones: {public_url}/audience/   Quest: {public_url}/#key={host_key}")
     print(f"State:    curl -s localhost:{port}/api/state   (game: /api/game/state)")
     print(f"Scene:    {len(hub.ops)} edits from scenes/{hub.source}")
     threading.Thread(target=watch_headset, args=(hub,), daemon=True).start()
