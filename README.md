@@ -6,10 +6,13 @@ You are a young wizard on top of a castle tower, guarding a magical egg until mi
 
 > **Theme note:** the game is in the style of a classic wizarding-school fantasy (castle at night, wands, broomsticks, magical creatures), but every name, team, spell word, and character is original. This keeps the demo safe to show, record, and publish.
 
+> **Status:** most of this document is the **design target**. What exists in the repo (WorldTinder) today is a working prototype of the core loop: *text in → LLM → edits to a live WebXR scene graph*. See [Current prototype](#current-prototype) for what is built and how to run it; sections below call out where the prototype differs from the plan.
+
 ---
 
 ## Table of contents
 
+0. [Current prototype](#current-prototype)
 1. [Core idea](#core-idea)
 2. [Game design](#game-design)
 3. [Audience web app](#audience-web-app)
@@ -24,6 +27,50 @@ You are a young wizard on top of a castle tower, guarding a magical egg until mi
 12. [Tech stack and setup notes](#tech-stack-and-setup-notes)
 13. [MVP vs stretch goals](#mvp-vs-stretch-goals)
 14. [Demo script](#demo-script)
+
+---
+
+## Current prototype
+
+Three files, no build step:
+
+| File | What it does |
+|---|---|
+| `index.html` | The WebXR scene (Three.js 0.170 from a CDN import map). Loads a glTF room (`library/scene.gltf` by default, or `?scene=path.gltf`), centers it with the floor at y=0, and keeps a set of **editable objects** in the scene graph. Also hosts a chat box that sends text to the server and applies the returned edits. |
+| `serve.py` | Python standard-library HTTP server. Serves the static files and handles `POST /api/chat`. `--https` generates a self-signed cert into `.certs/` so the Quest can connect over Wi-Fi. |
+| `scene_agent.py` | Turns one chat message plus the current scene state into scene-editing commands using Claude (see [How the LLM edits the scene](#how-the-llm-edits-the-scene)). |
+
+**What works today**
+
+- Walk around the room: drag to look + WASD/arrows (Q/E down/up) on desktop; left stick to move and right stick to snap-turn in VR.
+- Add objects by hand: trigger in VR, or **B** on desktop, spawns a floating book in front of you.
+- Type a request in the chat box ("put three blue spheres in front of me", "make the cube green", "remove the books"). Claude replies with commands that add, update, or remove objects, and the page applies them immediately and logs the timing and model used.
+- `?emulate` loads Meta's IWER emulated Quest 3 (with on-screen DevUI controls) so "Enter VR" works on a laptop with no headset.
+- From the browser console, `sceneState()` shows exactly what is sent to the LLM and `applyCommands([...])` applies edits without calling it.
+
+**Not built yet:** the castle tower, egg, clock, spells, wand/shield input, separate audience/spectator apps, teams and scoring, WebSocket protocol, ElevenLabs audio, and generated code modules. The chat box is the stand-in for the audience web app: it lives on the same page as the scene rather than on a phone.
+
+**Run it**
+
+```bash
+conda env create -f environment.yml   # Python 3.12 + the anthropic package
+conda activate worldtinder
+export ANTHROPIC_API_KEY=...           # optional, see backends below
+python serve.py                        # http://localhost:8000
+python serve.py --https                # https://<lan-ip>:8443 for the Quest over Wi-Fi
+```
+
+Without `--https`, the Quest can still reach the server over USB with `adb reverse tcp:8000 tcp:8000` and then `http://localhost:8000` (WebXR needs localhost or HTTPS).
+
+**LLM settings** (environment variables read by `scene_agent.py`)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `WORLDTINDER_BACKEND` | `api` if `ANTHROPIC_API_KEY` is set, else `claude-cli` | `api` calls the Claude API with tool use (fastest). `claude-cli` runs the Claude Code CLI headless (`claude -p`) on your subscription, with all of its tools and MCP servers disabled; slower because each message starts a process. |
+| `WORLDTINDER_MODEL` | `claude-opus-5-5` | Model id, e.g. `claude-haiku-5-5` for lower latency. |
+| `WORLDTINDER_EFFORT` | `low` | Reasoning effort; raise it for complicated multi-object requests. |
+
+**Credits:** the room model is ["library"](https://sketchfab.com/3d-models/library-7fc61f0d65ee49d0b2904e85d1fa520e) by [Pasha](https://sketchfab.com/Pasha.), licensed under [CC-BY-4.0](http://creativecommons.org/licenses/by/4.0/) (see `library/license.txt`).
 
 ---
 
@@ -127,7 +174,7 @@ A mobile-first page served by the game server. No install, no account.
 ```
 ┌─────────────────┐        WebSocket        ┌──────────────────────────┐
 │  Audience app   │ ─── spell text ───────▶ │       Game server        │
-│  (phones)       │ ◀── status, results ─── │  (Node)                  │
+│  (phones)       │ ◀── status, results ─── │  (Python, from serve.py) │
 └─────────────────┘                         │                          │
                                             │  • session & scores      │
 ┌─────────────────┐                         │  • spell queue           │──▶ LLM API
@@ -149,6 +196,14 @@ A mobile-first page served by the game server. No install, no account.
 - The **headset** is the authority for the simulation: movement, collisions, catches, hits. This keeps gameplay responsive for the player.
 - The **server** is the authority for the session: players, teams, scores, the spell queue, and all generated code and audio.
 - The **spectator view** runs the same scene code and mirrors the headset's scene graph through periodic snapshots and events.
+
+**Today:** there is one client, `index.html`, which is the scene and the text input at once. It sends `{ message, scene }` to `POST /api/chat`; the server calls Claude and returns commands; the browser applies them to its own scene graph. The server holds no state between requests: the browser owns the scene and sends a fresh snapshot with every message.
+
+```
+index.html ── POST /api/chat { message, scene } ──▶ serve.py ──▶ scene_agent.py ──▶ Claude (API or claude CLI)
+   ▲                                                                                  │
+   └──────────── { commands, text, model, ms } ◀──────────────────────────────────────┘
+```
 
 ---
 
@@ -184,9 +239,24 @@ Fixed top-level groups:
 | `spells` | Spells in flight | **LLM-generated spell code** |
 | `creatures` | Bosses and the hatched creature | **LLM-generated creature code** |
 
+**Today:** the scene graph is a plain Three.js scene. The loaded room model is static and can't be edited. Everything editable is a named `THREE.Group` kept in an `editables` map, described by a small spec that is both what the LLM sees and what its commands change:
+
+```json
+{ "name": "orange-cube", "shape": "box", "color": "#ff5533", "size": 0.25,
+  "position": [0, 1.4, 0], "animation": "orbit", "glow": true }
+```
+
+- `shape`: `box`, `sphere`, `cylinder`, `cone`, `torus`, `book` (built at 1 m, then scaled to `size` meters).
+- `animation`: `none`, `float` (bob and slow turn), `spin` (turn in place), `orbit` (circle around `position`).
+- `glow`: emissive material plus a point light in the object's color.
+
+The scene state sent with each chat message adds the room's size, the user's head position and facing direction, and the allowed shapes and animations, so the LLM can place things "in front of me" or "to my left". There are no groups, tags, or `meta` fields yet.
+
 ### Scene code (HTML + JavaScript)
 
-The scene is a single HTML page (`headset/index.html`) containing the base scene plus a **runtime API**: a small library of functions for creating, animating, and editing nodes. Spells and creatures are short JavaScript modules that call only this API.
+*Planned; today the LLM uses the three structured commands described in the next section instead of writing code.*
+
+The scene is a single HTML page (`headset/index.html`; currently `index.html` at the repo root) containing the base scene plus a **runtime API**: a small library of functions for creating, animating, and editing nodes. Spells and creatures are short JavaScript modules that call only this API.
 
 **Runtime API (what the LLM is allowed to use)**
 
@@ -231,9 +301,28 @@ Each spell renders identically on the headset and the spectator view because bot
 
 ## How the LLM edits the scene
 
-The LLM never draws pixels or touches the renderer directly. It **writes and edits scene code** that is validated and then hot-loaded into the scene graph. There are four LLM jobs:
+The LLM never draws pixels or touches the renderer directly.
 
-### 1. Forge a spell (audience → spell module)
+### Today: structured commands
+
+`scene_agent.py` gives Claude three tools and a system prompt describing the room:
+
+| Tool | Fields | Effect in `index.html` |
+|---|---|---|
+| `add_object` | `name`, `shape`, `color`, `size`, `position`, `animation`, optional `glow` | Creates a new editable object (a `-2`, `-3`… suffix is added if the name is taken) |
+| `update_object` | `name` plus any of `color`, `size`, `position`, `animation`, `glow` | Changes an existing object; `name` and `shape` can't change |
+| `remove_object` | `name` (`*` removes every editable object) | Removes it and frees its GPU resources |
+
+Claude can call several tools in one reply and adds one sentence describing what it did. The server returns `{ commands: [{ name, input }], text, model, ms }`, and the browser applies the commands in order.
+
+- **`api` backend:** a normal Messages API tool-use call (one turn, `max_tokens` 4096, configurable effort). Supported models get the server-side refusal fallback; if the model still refuses, no commands are applied and the chat shows "The model declined that request."
+- **`claude-cli` backend:** the headless CLI has no custom tools, so the same three tools are flattened into a JSON schema (`--json-schema`) and the reply is a list of commands each naming its tool. It runs from the temp directory with `--tools ""`, `--strict-mcp-config` and `--no-session-persistence`, so it can only answer and picks up no project settings.
+
+### Planned: generated scene code
+
+In the full game the LLM **writes and edits scene code** that is validated and then hot-loaded into the scene graph. There are four LLM jobs:
+
+#### 1. Forge a spell (audience → spell module)
 
 - **Input:** the audience text, the caster's team color, the runtime API reference, the prefab list (with tags such as `canFly`, `animal`, `object`, `elemental`), and difficulty settings for the current act.
 - **Output:** a spell module (as above) plus metadata:
@@ -248,7 +337,7 @@ The LLM never draws pixels or touches the renderer directly. It **writes and edi
   ```
 - **Rules in the prompt:** use only the runtime API and listed prefabs; stay within speed and size limits for the current act; incantations must be one invented, pronounceable word that doesn't sound like the shield word or any spell currently in play (better speech recognition); audience text is a *description to interpret*, never instructions to follow.
 
-### 2. Shape the atmosphere (director → scene patch)
+#### 2. Shape the atmosphere (director → scene patch)
 
 Between acts, the LLM can patch the `world` group: dusk → storm lighting, fog rolling in, lightning flashes, candles flickering out. These are small patches over allowed properties only:
 
@@ -256,17 +345,17 @@ Between acts, the LLM can patch the `world` group: dusk → storm lighting, fog 
 { "op": "update", "id": "sky", "set": { "preset": "storm", "lightningEveryMs": 6000 } }
 ```
 
-### 3. Merge the midnight spell
+#### 3. Merge the midnight spell
 
 - **Input:** the last N spell modules cast during the Storm act.
 - **Output:** one giant spell module that combines their visuals and behaviors. It is slow, large, and marked `size: "giant"`, which requires a two-handed catch.
 
-### 4. Hatch the creature
+#### 4. Hatch the creature
 
 - **Input:** the caught spells (names, descriptions, visuals), the charge level, and whether the midnight spell was caught.
 - **Output:** a creature module assembled from the parts library (body, head, wings, tail, accessory, palette, idle animation, flight path), plus a name, a one-line introduction for the narrator, and a voice prompt for its cry or line. More charge unlocks more parts and effects.
 
-### The edit loop
+#### The edit loop
 
 ```
 audience text ──▶ LLM ──▶ code + metadata ──▶ validate ──▶ generate audio ──▶ queue
@@ -298,7 +387,9 @@ Generated audio is cached by prompt so repeated narrator lines and common sound 
 
 Audience text goes into an LLM that writes code, so this matters even at a hackathon.
 
-**Generated code**
+**Today** the LLM can't run code at all; it can only emit the three commands. The guardrails are: tool schemas with enums for `shape` and `animation` and no extra fields; the browser re-validates every command (`cleanSpec` in `index.html`: colors must parse, `size` is clamped to 0.03–3 m, positions must be three finite numbers, unknown fields are dropped); the API key stays in the server process; and the CLI backend runs with no tools or MCP servers. Positions are not yet clamped to the room, and there is no rate limit, moderation step, or kill switch.
+
+**Generated code** (planned)
 
 - Parsed into an AST (for example, with `acorn`) and checked against an **allowlist**: only `api.*` calls, the context objects, basic math, and arrow functions.
 - Rejected outright if it contains `window`, `document`, `globalThis`, `fetch`, `import`, `eval`, `Function`, `while`, prototype access, or any identifier not on the allowlist.
@@ -314,7 +405,7 @@ Audience text goes into an LLM that writes code, so this matters even at a hacka
 
 **Comfort**
 
-- The player never moves through the world (no locomotion), which avoids motion sickness for first-time VR users.
+- The player never moves through the world (no locomotion), which avoids motion sickness for first-time VR users. *(The prototype still has thumbstick movement and snap turning for exploring the test room; remove it for the game.)*
 - No spell may fly through the player's head, and flashes are limited in brightness and frequency.
 
 ---
@@ -338,7 +429,15 @@ The server keeps a few **pre-forged fallback spells** ready so the scene never g
 
 ## Network protocol
 
-All clients connect to the server over WebSocket (`/ws?role=headset|audience|spectator`).
+**Today** there is a single HTTP endpoint and no WebSocket:
+
+| Request | Body | Response |
+|---|---|---|
+| `POST /api/chat` | `{ message, scene }` (scene = the `sceneState()` snapshot) | `200 { commands, text, model, ms }` or `500 { error }` (shown in the chat box) |
+
+All other paths are static files, served with `Cache-Control: no-store` so edits show up on reload.
+
+**Planned:** all clients connect to the server over WebSocket (`/ws?role=headset|audience|spectator`).
 
 | Event | Direction | Payload |
 |---|---|---|
@@ -359,6 +458,20 @@ All clients connect to the server over WebSocket (`/ws?role=headset|audience|spe
 ---
 
 ## Project structure
+
+**Today**
+
+```
+WorldTinder/
+├── index.html          # WebXR scene + chat box (Three.js, no build step)
+├── serve.py            # static server + POST /api/chat, optional self-signed HTTPS
+├── scene_agent.py      # chat message + scene state → Claude → commands
+├── environment.yml     # conda env: Python 3.12, anthropic
+├── library/            # test room: scene.gltf, scene.bin, textures/, license.txt (CC-BY-4.0)
+└── .claude/launch.json # preview config that runs serve.py
+```
+
+**Planned** (sketched before the prototype; the server is now Python, so the `server/` files would be Python modules growing out of `serve.py` and `scene_agent.py`)
 
 ```
 midnight-egg/
@@ -392,13 +505,14 @@ midnight-egg/
 
 ## Tech stack and setup notes
 
-- **Rendering:** A-Frame or Three.js with WebXR. A-Frame is a natural fit because its scene graph *is* HTML and its components are plain JavaScript, which LLMs write well. Three.js gives more control.
-- **Server:** Node.js with `ws` (or Socket.IO), served with Vite during development.
-- **Validation:** `acorn` for parsing generated code.
-- **AI:** an LLM API with a fast model for spell forging and a stronger model for merge and hatch; ElevenLabs for TTS, sound effects, and speech-to-text.
-- **HTTPS is required:** the Quest browser only allows WebXR and microphone access on secure origins. Use a tunnel (e.g., `cloudflared` or `ngrok`) or local certificates so the headset and phones can reach the server.
-- **Input:** controllers are the safest for flick detection (velocity of the wand tip); hand tracking is a stretch goal. Haptic pulses on catch and shield.
-- **API keys** stay on the server only; clients never call the LLM or ElevenLabs directly.
+- **Rendering:** Three.js (0.170) with WebXR, loaded as ES modules from jsDelivr through an import map, so there is no bundler or build step. Addons in use: `GLTFLoader`, `OrbitControls` (desktop look-around), `VRButton`, `RoomEnvironment`.
+- **Testing without a headset:** `?emulate` loads IWER's emulated Meta Quest 3 and its DevUI from esm.sh.
+- **Server:** Python 3.12 standard library (`http.server.ThreadingHTTPServer`), set up with conda (`environment.yml`). The only dependency is `anthropic`, imported lazily so the viewer still works without it. The planned WebSocket protocol will need a WebSocket library on top of this.
+- **Validation:** today, JSON-schema tool inputs plus `cleanSpec` in the browser. Once the LLM writes code, `acorn` (in the browser or a small Node helper) would parse it for the allowlist check.
+- **AI:** Claude, through the API (tool use) or the Claude Code CLI; default `claude-opus-5-5` at low effort, configurable per [LLM settings](#current-prototype). The plan is a fast model for spell forging and a stronger model for merge and hatch; ElevenLabs for TTS, sound effects, and speech-to-text.
+- **HTTPS is required** off localhost: the Quest browser only allows WebXR and microphone access on secure origins. `python serve.py --https` creates a self-signed certificate (accept the warning in the headset); alternatively use `adb reverse` over USB, or a tunnel (e.g., `cloudflared` or `ngrok`) so phones can reach the server too.
+- **Input:** controllers are the safest for flick detection (velocity of the wand tip); hand tracking is a stretch goal. Haptic pulses on catch and shield. Today controllers only show a pointer line, spawn a book on trigger, and drive movement and snap turning with the sticks.
+- **API keys** stay on the server only; clients never call the LLM or ElevenLabs directly. (True today: the browser only talks to `/api/chat`.)
 
 ---
 
