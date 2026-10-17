@@ -1,14 +1,21 @@
 """Game logic: the round, the egg, scores, and the pipeline every audience spell goes through.
 
-    submit ─▶ RequestQueue ─┬─ PRESET ─────── resolved from the catalog ──┐
-             (by tier)      └─ REMIX/NOVEL ── LLM dispatcher (not yet) ───┤
-                                                                          ▼
-              headset ◀── cast, paced by the act's in-flight limit ◀── ready
+    submit ─▶ RequestQueue ──claim──┬─ PRESET ─────── CatalogForge ─────┐
+             (tier, arrival)        └─ REMIX/NOVEL ── LLM forge ────────┤ job.ack(spell): removed from
+                   ▲                                                    │ the queue, validated, ready
+                   └──────── job.nack() or lease timeout: retry ◀───────┤
+                                                                        ▼
+    headset ──"spawned" ack──▶ cast ◀── sent ◀── paced by the act ◀── ready
+
+Two acknowledgements, one per hand-off: a forge acks "the spell is built" (forge.py), and the
+headset acks "the spell is in the scene" (report("spawned")). Until then the request stays where
+it was: in the queue, or sent again to a headset that reconnects.
 
 The server owns the session (members, teams, scores, queue). The headset owns the simulation and
 reports what happened to each spell (hit / catch / shield / return); the engine scores it.
 """
 
+import logging
 import math
 import random
 import secrets
@@ -17,9 +24,11 @@ import time
 from collections import Counter, deque
 from dataclasses import dataclass, field
 
-from .dispatch import NotConnectedDispatcher
+from .forge import CatalogForge, ForgeJob, NotConnectedForge
 from .request_queue import RequestQueue
-from .spell_request import PENDING, Recipe, SpellRequest, Status, Tier, resolve_preset
+from .spell_request import PENDING, Recipe, SpellRequest, Status, Tier, validate_spell
+
+log = logging.getLogger(__name__)
 
 TEAMS = (
     {"id": "ember", "name": "Ember", "color": "#c8102e"},
@@ -42,7 +51,9 @@ ACT_NAMES = {a.name for a in ACTS}
 ROUND_SECONDS = sum(a.seconds for a in ACTS)
 MAX_CRACKS = 5
 COOLDOWN_S = 15
-SPELL_LIFETIME_S = 20  # a cast spell with no reported outcome fizzles after this
+SPELL_LIFETIME_S = 20  # a spell in the scene with no reported outcome fizzles after this
+LEASE_SECONDS = {Tier.PRESET: 5, Tier.REMIX: 20, Tier.NOVEL: 60}  # a forge claim lapses after this
+MAX_ATTEMPTS = 2  # forge claims per request before it fails
 HIT_POINTS = 10
 RETURN_PENALTY = 5
 STATE_EVERY_S = 1.0
@@ -81,12 +92,13 @@ def act_at(elapsed):
 
 
 class GameEngine:
-    def __init__(self, catalog, hub, dispatcher=None, clock=time.monotonic):
+    def __init__(self, catalog, hub, llm_forge=None, clock=time.monotonic):
         self.catalog = catalog
         self.hub = hub
-        self.dispatcher = dispatcher or NotConnectedDispatcher()
+        self.catalog_forge = CatalogForge()
+        self.llm_forge = llm_forge or NotConnectedForge()
         self.clock = clock
-        self.queue = RequestQueue()
+        self.queue = RequestQueue(LEASE_SECONDS, MAX_ATTEMPTS, clock)
         self.members = {}
         self.requests = {}
         self._by_token = {}
@@ -103,7 +115,7 @@ class GameEngine:
         self.charge = 0
         self.scores = {t["id"]: 0 for t in TEAMS}
         self.ready = deque()  # resolved spells waiting for room in the sky
-        self.in_flight = {}   # id -> request, cast and awaiting an outcome
+        self.in_flight = {}   # id -> request, SENT to the headset or CAST into the scene
         self.orbs = []        # caught spells the player can return
         self._last_state_at = -math.inf
 
@@ -202,31 +214,35 @@ class GameEngine:
             self._publish_state(force=True)
 
     def _clear_spells(self):
-        self.queue.drain()
-        for request in self.requests.values():
-            # Includes requests the dispatcher has popped but not processed yet, and ones with the
-            # LLM: both check the status first, so they are dropped.
-            if request.status in PENDING:
-                self._set_status(request, Status.EXPIRED)
-            elif request.status is Status.CAST:
-                self._set_status(request, Status.FIZZLED)
+        # Clearing the queue also invalidates every forge lease, so late acks are rejected.
+        for request in self.queue.clear() + list(self.ready):
+            self._set_status(request, Status.EXPIRED)
+        for request in self.in_flight.values():
+            self._set_status(request, Status.FIZZLED)
         self.ready.clear()
         self.in_flight.clear()
 
     # ---- headset -------------------------------------------------------------------------------
 
     def report(self, event_type, spell_id, target_member_id=None):
-        """Apply an outcome reported by the headset: hit, catch, shield, or return."""
+        """Apply an event from the headset: spawned (delivery ack), hit, catch, shield, or return."""
         with self._lock:
             if self.phase not in ACT_NAMES:
                 raise GameError("No round is running.", 409)
             if event_type == "return":
                 self._return_spell(spell_id, target_member_id)
+            elif event_type == "spawned":
+                request = self.in_flight.get(spell_id)
+                if request is None:
+                    raise GameError(f"Spell {spell_id} wasn't sent to the headset.", 404)
+                if request.status is Status.SENT:  # repeats are harmless
+                    request.cast_at = self.clock()  # the fizzle timer starts now
+                    self._set_status(request, Status.CAST)
             else:
                 status = {"hit": Status.HIT, "catch": Status.CAUGHT, "shield": Status.SHIELDED}.get(event_type)
                 if status is None:
                     raise GameError(f"Unknown event type {event_type!r}.")
-                request = self.in_flight.pop(spell_id, None)
+                request = self.in_flight.pop(spell_id, None)  # an outcome also implies it spawned
                 if request is None:
                     raise GameError(f"Spell {spell_id} isn't in flight.", 404)
                 self._set_status(request, status)
@@ -260,39 +276,69 @@ class GameEngine:
     # ---- pipeline ------------------------------------------------------------------------------
 
     def dispatch_next(self, timeout=0):
-        """Take the next request the engine can work on: PRESETs always, LLM tiers only with LLM capacity."""
-        request = self.queue.pop(self._can_take, timeout)
-        if request is None:
+        """Claim the next request a forge can take and hand it over. It stays queued until answered."""
+        claimed = self.queue.claim(self._can_take, timeout)
+        if claimed is None:
             return None
-        with self._lock:
-            self._publish_queue_positions()  # everyone behind it moved up
+        request, lease = claimed
+        job = ForgeJob(request, lease, self.catalog, self._ack, self._nack, self.queue.is_current, self._seconds_left)
         if request.tier is Tier.PRESET:
-            with self._lock:
-                if request.status is Status.QUEUED:
-                    request.spell = resolve_preset(request.recipe, self.catalog)
-                    self._make_ready(request)
-        else:
-            with self._lock:
-                if request.status is not Status.QUEUED:
-                    return request
-                self._set_status(request, Status.FORGING)
-            self.dispatcher.submit(request, self.catalog, self._on_forged)
+            self.catalog_forge.submit(job)  # acks before returning
+            return request
+        with self._lock:
+            request.attempts = lease.attempt
+            self._set_status(request, Status.FORGING)
+        try:
+            self.llm_forge.submit(job)
+        except Exception as err:
+            log.exception("LLM forge failed to start %s", request.id)
+            job.nack(f"forge error: {err}")
         return request
 
     def _can_take(self, request):
-        return request.tier is Tier.PRESET or self.dispatcher.has_capacity()
+        # Runs under the queue's lock: only queue and forge state here, never the engine's lock.
+        if request.tier is Tier.PRESET:
+            return True
+        return self.queue.claimed_count({Tier.REMIX, Tier.NOVEL}) < self.llm_forge.capacity
 
-    def _on_forged(self, request, spell, error):
-        """Called by the LLM dispatcher, from any thread, when a REMIX/NOVEL request is done."""
+    def _seconds_left(self, lease):
+        return max(0.0, lease.deadline - self.clock())
+
+    def _ack(self, lease, spell):
+        """ForgeJob.ack: the forge built the spell. Returns False if the job is no longer current."""
+        spell, error = validate_spell(spell, self.catalog)
+        if error:
+            log.warning("forge ack for %s rejected, counting it as a nack: %s", lease.request_id, error)
+            self._nack(lease, f"invalid spell: {error}")
+            return False
         with self._lock:
-            if request.status is Status.FORGING:  # otherwise the round ended while it was forging
-                if spell is None:
-                    request.error = error or "The forge couldn't make that spell."
-                    self._set_status(request, Status.FAILED)
-                else:
-                    request.spell = spell
-                    self._make_ready(request)
-        self.queue.wake()  # LLM capacity freed up
+            request = self.queue.ack(lease)
+            if request is None:
+                return False
+            request.spell = spell
+            request.error = None
+            self._make_ready(request)
+            self._publish_queue_positions()
+        self.queue.wake()  # forge capacity freed up
+        return True
+
+    def _nack(self, lease, error):
+        """ForgeJob.nack: the forge couldn't build it. Returns False if the job is no longer current."""
+        with self._lock:
+            result = self.queue.nack(lease)
+            if result is None:
+                return False
+            self._after_release(*result, error)
+        self.queue.wake()
+        return True
+
+    def _after_release(self, request, retrying, error):
+        if retrying:
+            self._set_status(request, Status.QUEUED)
+            self._publish_queue_positions()
+        else:
+            request.error = error or "The forge couldn't make that spell."
+            self._set_status(request, Status.FAILED)
 
     def _make_ready(self, request):
         member = self.members[request.member_id]
@@ -308,13 +354,19 @@ class GameEngine:
         limit = act_at(self.clock() - self.round_started).max_in_flight
         while self.ready and len(self.in_flight) < limit:
             request = self.ready.popleft()
-            request.cast_at = self.clock()
             self.in_flight[request.id] = request
-            self._set_status(request, Status.CAST)
+            self._set_status(request, Status.SENT)  # CAST once the headset reports "spawned"
             self.hub.publish("spell:cast", request.spell, roles=("headset", "spectator"))
+
+    def unconfirmed_casts(self):
+        """Spells sent to the headset that it hasn't confirmed; sent again when a headset connects."""
+        with self._lock:
+            return [r.spell for r in self.in_flight.values() if r.status is Status.SENT]
 
     def tick(self):
         with self._lock:
+            for request, retrying in self.queue.expire_leases():
+                self._after_release(request, retrying, "The forge took too long.")
             now = self.clock()
             if self.phase in ACT_NAMES:
                 elapsed = now - self.round_started
@@ -325,7 +377,7 @@ class GameEngine:
                     if act != self.phase:
                         self.phase = act
                         self._publish_state(force=True)
-                    for request in [r for r in self.in_flight.values() if now - r.cast_at > SPELL_LIFETIME_S]:
+                    for request in [r for r in self.in_flight.values() if r.cast_at and now - r.cast_at > SPELL_LIFETIME_S]:
                         del self.in_flight[request.id]
                         self._set_status(request, Status.FIZZLED)
                     self._release_ready()
@@ -369,12 +421,12 @@ class GameEngine:
                 "scores": self.scores,
                 "teams": TEAMS,
                 "queue": self.queue.counts(),
-                "forging": sum(r.status is Status.FORGING for r in self.requests.values()),
+                "forging": self.queue.claimed_count(set(Tier)),
                 "ready": len(self.ready),
                 "in_flight": [r.spell for r in self.in_flight.values()],
                 "orbs": [{"id": r.id, "name": r.spell["name"], "incantation": r.spell["incantation"]} for r in self.orbs],
                 "audience": len(self.members),
-                "forge_online": self.dispatcher.online,
+                "forge_online": getattr(self.llm_forge, "online", True),
                 "cooldown_s": COOLDOWN_S,
             }
 
@@ -401,10 +453,15 @@ class GameEngine:
                     "hits": sum(r.status is Status.HIT for r in mine),
                     "latest": mine[-1].to_public() if mine else None,
                 })
+            queue = []
+            for ahead, (request, lease) in enumerate(self.queue.snapshot()):
+                entry = row(request, ahead)
+                if lease:
+                    entry["lease"] = {"attempt": lease.attempt, "seconds_left": round(self._seconds_left(lease), 1)}
+                queue.append(entry)
             return {
                 "roster": roster,
-                "queue": [row(r, ahead=i) for i, r in enumerate(self.queue.snapshot())],
-                "forging": [row(r) for r in self.requests.values() if r.status is Status.FORGING],
+                "queue": queue,  # claimed requests (status "forging") keep their place until acked
                 "ready": [row(r) for r in self.ready],
                 "in_flight": [row(r) for r in self.in_flight.values()],
             }
@@ -421,12 +478,14 @@ class GameEngine:
         self._publish_request(request)
 
     def _request_public(self, request):
-        return request.to_public(ahead=self.queue.ahead_of(request) if request.status is Status.QUEUED else None)
+        queued = request.status in (Status.QUEUED, Status.FORGING)
+        return request.to_public(ahead=self.queue.ahead_of(request) if queued else None)
 
     def _publish_request(self, request):
         self._host_dirty = True
         self.hub.publish("spell:status", self._request_public(request), member_id=request.member_id)
 
     def _publish_queue_positions(self):
-        for ahead, request in enumerate(self.queue.snapshot()):
+        self._host_dirty = True
+        for ahead, (request, _) in enumerate(self.queue.snapshot()):
             self.hub.publish("spell:status", request.to_public(ahead=ahead), member_id=request.member_id)

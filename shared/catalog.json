@@ -1,6 +1,7 @@
 {
   "default_motion": "straight",
   "channel_ms": 2500,
+  "shapes": ["box", "sphere", "cylinder", "cone", "torus", "book"],
 
   "assets": [
     { "id": "fireball",    "label": "Fireball",    "emoji": "🔥", "shape": "sphere",   "color": "#ff6a1f", "size": 0.3,  "glow": true,  "power": 1, "stem": "Flamm",  "tags": ["elemental", "fire"] },

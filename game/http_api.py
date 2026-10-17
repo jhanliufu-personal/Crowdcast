@@ -9,6 +9,7 @@ serve.py hands every /api/ request except /api/chat to GameAPI.handle().
     POST /api/spells        {parts}    (token) → the queued request
     GET  /api/events?role=audience&token=… | role=headset | role=spectator | role=host&key=…   (SSE)
     POST /api/headset/event {type, spell_id, target_member_id?}   (host key)
+                            type: spawned (delivery ack) | hit | catch | shield | return
     POST /api/admin/start | /api/admin/reset                      (host key)
     GET  /api/admin/view                                          (host key) roster and queue
 
@@ -119,6 +120,9 @@ class GameAPI:
                 self._sse(h, "me", json.dumps(self.engine.member_view(member)))
             if role == "host":
                 self._sse(h, "host:view", json.dumps(self.engine.host_view()))
+            if role == "headset":
+                for spell in self.engine.unconfirmed_casts():  # sent before, never acknowledged
+                    self._sse(h, "spell:cast", json.dumps(spell))
             while not sub.closed and not self.engine.stopped:
                 try:
                     event, payload = sub.get(timeout=KEEPALIVE_S)
