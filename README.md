@@ -37,8 +37,9 @@ No build step and no dependencies beyond the standard library (plus `anthropic` 
 
 | File | What it does |
 |---|---|
-| `index.html` | The WebXR scene (Three.js 0.170 from a CDN import map). Loads a glTF room (`library/scene.gltf` by default, or `?scene=path.gltf`), centers it with the floor at y=0, and keeps a set of **editable objects** in the scene graph. Also hosts a chat box that sends text to the server and applies the returned edits. |
-| `serve.py` | Python standard-library HTTP server. Serves the static files and handles `POST /api/chat`. `--https` generates a self-signed cert into `.certs/` so the Quest can connect over Wi-Fi. |
+| `index.html` | The WebXR scene (Three.js 0.170 from a CDN import map). Loads a glTF room (`library/scene.gltf` by default, or `?scene=path.gltf`), centers it with the floor at y=0, and keeps a set of **editable objects** in the scene graph. Also hosts a chat box that sends text to the server. Every open page joins **live sync** over a WebSocket (`/ws`) and applies the server's edit log; `?mirror` shows the headset's view. |
+| `serve.py` | Python standard-library HTTP server. Serves the static files, runs the **scene hub** (the ordered edit log every page applies, patches, the chat box's `POST /api/chat`, the player's live snapshot at `GET /api/state`), and mounts the game server. `--https` generates a self-signed cert into `.certs/` so the Quest can connect over Wi-Fi. |
+| `patches/` | Example patches: named JavaScript snippets sent to every page with `POST /api/patch?id=NAME` (e.g. `walking-robot.js`). |
 | `scene_agent.py` | Turns one chat message plus the current scene state into scene-editing commands using Claude (see [How the LLM edits the scene](#how-the-llm-edits-the-scene)). |
 | `game/` | The game server: audience members and teams, structured spell requests, the priority request queue, the round (acts, clock, cracks, charge, scores), and the HTTP + Server-Sent Events API. Mounted by `serve.py`. |
 | `audience/index.html` | The audience web app for phones, served at `/audience/`. |
@@ -49,12 +50,14 @@ No build step and no dependencies beyond the standard library (plus `anthropic` 
 
 - Walk around the room: drag to look + WASD/arrows (Q/E down/up) on desktop; left stick to move and right stick to snap-turn in VR.
 - Add objects by hand: trigger in VR, or **B** on desktop, spawns a floating book in front of you.
-- Type a request in the chat box ("put three blue spheres in front of me", "make the cube green", "remove the books"). Claude replies with commands that add, update, or remove objects, and the page applies them immediately and logs the timing and model used.
+- Type a request in the chat box ("put three blue spheres in front of me", "make the cube green", "remove the books"). Claude replies with commands that add, update, or remove objects; the server adds them to its edit log, every open page applies them immediately, and the chat box logs the timing and model used.
+- **Live scene sync:** every edit (chat commands, books dropped with the trigger, patches) goes through the server's ordered log, so the headset, desktop tabs, and `?mirror` pages stay identical; pages replay the log when they load. The player page streams its head and controller poses about 30 times a second, and `GET /api/state` returns them with a live snapshot of its scene (plus the Quest's own performance stats while `adb` can reach it). The log lasts until the server restarts or `POST /api/reset`.
+- **Patches:** `POST /api/patch?id=NAME` runs a named JavaScript snippet in every page without reloading (see `setPatch()` in `index.html` for what it can use); sending the same name replaces it, `DELETE` removes it.
 - `?emulate` loads Meta's IWER emulated Quest 3 (with on-screen DevUI controls) so "Enter VR" works on a laptop with no headset.
 - From the browser console, `sceneState()` shows exactly what is sent to the LLM and `applyCommands([...])` applies edits without calling it.
 - **Game server skeleton:** audience members join from any number of phones, get sorted into teams, and compose spells from building blocks and free text. Requests are queued by tier (see [Spell requests and the queue](#spell-requests-and-the-queue)); ready-made ones are resolved from the catalog and cast immediately, paced by the act. The server runs the 3-minute round and scores hit / catch / shield / return reports from the headset.
 
-**Not built yet:** the LLM forge for remix and novel requests (they wait in the queue, and the app says the forge is offline; the interface is ready, see [the forge contract](#acknowledgements-and-the-forge-contract-llm-harness)), the headset side of the game (`index.html` doesn't yet subscribe to cast spells, confirm them, or report outcomes, so cast spells stay `sent`), the castle tower, egg, wand/shield input, spectator view, midnight merge, hatched creature, ElevenLabs audio, and generated code modules. The chat box in `index.html` still edits the scene directly, separately from the game.
+**Not built yet:** the LLM forge for remix and novel requests (they wait in the queue, and the app says the forge is offline; the interface is ready, see [the forge contract](#acknowledgements-and-the-forge-contract-llm-harness)), the headset side of the game (`index.html` doesn't yet subscribe to cast spells, confirm them, or report outcomes, so cast spells stay `sent`), the castle tower, egg, wand/shield input, spectator view, midnight merge, hatched creature, ElevenLabs audio, and generated code modules. The chat box and the scene hub are still separate from the game: spells don't go through the edit log yet.
 
 **Run it**
 
@@ -69,7 +72,9 @@ python -m unittest discover tests      # game logic tests
 
 The server prints the audience URL (`/audience/`) and the host console URL (`/host/#key=<key>`). The host key comes from `WORLDTINDER_HOST_KEY`, or is randomly generated at each start; host and headset API calls need it. The host doesn't cast spells; the console only watches and runs the round. It updates when something changes (pushed at most every 0.25 s), not on a timer.
 
-Without `--https`, the Quest can still reach the server over USB with `adb reverse tcp:8000 tcp:8000` and then `http://localhost:8000` (WebXR needs localhost or HTTPS).
+The server listens on every network interface so phones can join. Patches run code in the pages, so the scene routes (`/ws`, `GET /api/state`, `/api/chat`, `/api/patch`, `/api/commands`, `/api/reload`, `/api/reset`) only answer requests from the Mac itself, or ones carrying the host key. On the Quest over Wi-Fi, open the scene as `https://<lan-ip>:8443/#key=<host key>` (the server prints this URL); the page sends the key with its WebSocket and chat requests.
+
+Without `--https`, the Quest can still reach the server over USB with `adb reverse tcp:8000 tcp:8000` and then `http://localhost:8000` (WebXR needs localhost or HTTPS). Over `adb reverse` its requests arrive from localhost, so it needs no key.
 
 **LLM settings** (environment variables read by `scene_agent.py`)
 
@@ -235,12 +240,18 @@ The LLM side plugs in at `game/forge.py`; see [the forge contract](#acknowledgem
 - The **server** is the authority for the session: players, teams, scores, the spell queue, and all generated code and audio.
 - The **spectator view** runs the same scene code and mirrors the headset's scene graph through periodic snapshots and events.
 
-**Today:** the game server (`game/`, inside `serve.py`) owns the session as described above: members, teams, the request queue, the round, and scores. Phones use the audience app; the headset side of the game isn't connected yet. The game server and the scene editor are still separate: `index.html` is the scene and a text input at once. It sends `{ message, scene }` to `POST /api/chat`; the server calls Claude and returns commands; the browser applies them to its own scene graph. The server holds no state between requests: the browser owns the scene and sends a fresh snapshot with every message.
+**Today:** the game server (`game/`, inside `serve.py`) owns the session as described above: members, teams, the request queue, the round, and scores. Phones use the audience app; the headset side of the game isn't connected yet. The game server and the scene editor are still separate. `index.html` is the scene and a text input at once. It sends `{ message, scene }` to `POST /api/chat`; the server calls Claude, adds the returned commands to its **edit log**, and sends them to every open page over the WebSocket, which applies them to its own scene graph. The server keeps the edit log (commands and patches, in order), not the scene itself: each page builds its scene graph by applying the log, and the player page answers the server's requests for a live snapshot.
 
 ```
 index.html ── POST /api/chat { message, scene } ──▶ serve.py ──▶ scene_agent.py ──▶ Claude (API or claude CLI)
-   ▲                                                                                  │
-   └──────────── { commands, text, model, ms } ◀──────────────────────────────────────┘
+                                                       │ commands
+curl ── POST /api/commands, /api/patch ──────────────▶ │
+                                                       ▼
+                                             edit log (seq 1, 2, 3, …)
+                                                       │ /ws: replayed on load, then each new edit
+                         ┌─────────────────────────────┼─────────────────────────────┐
+                         ▼                             ▼                             ▼
+                  player (headset) ── poses, snapshot ─▶ serve.py ── poses ─▶  ?mirror pages
 ```
 
 ---
@@ -351,7 +362,7 @@ The LLM never draws pixels or touches the renderer directly.
 | `update_object` | `name` plus any of `color`, `size`, `position`, `animation`, `glow` | Changes an existing object; `name` and `shape` can't change |
 | `remove_object` | `name` (`*` removes every editable object) | Removes it and frees its GPU resources |
 
-Claude can call several tools in one reply and adds one sentence describing what it did. The server returns `{ commands: [{ name, input }], text, model, ms }`, and the browser applies the commands in order.
+Claude can call several tools in one reply and adds one sentence describing what it did. The server returns `{ commands: [{ name, input }], text, model, ms }` to the chat box and adds the commands to the edit log, so every open page applies them in order.
 
 - **`api` backend:** a normal Messages API tool-use call (one turn, `max_tokens` 4096, configurable effort). Supported models get the server-side refusal fallback; if the model still refuses, no commands are applied and the chat shows "The model declined that request."
 - **`claude-cli` backend:** the headless CLI has no custom tools, so the same three tools are flattened into a JSON schema (`--json-schema`) and the reply is a list of commands each naming its tool. It runs from the temp directory with `--tools ""`, `--strict-mcp-config` and `--no-session-persistence`, so it can only answer and picks up no project settings.
@@ -531,7 +542,7 @@ Generated audio is cached by prompt so repeated narrator lines and common sound 
 
 Audience text goes into an LLM that writes code, so this matters even at a hackathon.
 
-**Today** audience requests are validated against the catalog and rate-limited (15 s cooldown, one pending spell per member), host and headset API calls need the host key, and audience text is never sent to an LLM yet. For the chat box, the LLM can't run code at all; it can only emit the three commands. The guardrails are: tool schemas with enums for `shape` and `animation` and no extra fields; the browser re-validates every command (`cleanSpec` in `index.html`: colors must parse, `size` is clamped to 0.03–3 m, positions must be three finite numbers, unknown fields are dropped); the API key stays in the server process; and the CLI backend runs with no tools or MCP servers. Positions are not yet clamped to the room, the chat box has no rate limit, and there is no moderation step or kill switch.
+**Today** audience requests are validated against the catalog and rate-limited (15 s cooldown, one pending spell per member), host and headset API calls need the host key, and audience text is never sent to an LLM yet. Patches (`/api/patch`) do run arbitrary JavaScript in every page, so they and the other scene routes only answer the Mac itself or the host key (see [Run it](#current-prototype)); the LLM never writes patches. For the chat box, the LLM can't run code at all; it can only emit the three commands. The guardrails are: tool schemas with enums for `shape` and `animation` and no extra fields; the browser re-validates every command (`cleanSpec` in `index.html`: colors must parse, `size` is clamped to 0.03–3 m, positions must be three finite numbers, unknown fields are dropped); the API key stays in the server process; and the CLI backend runs with no tools or MCP servers. Positions are not yet clamped to the room, the chat box has no rate limit, and there is no moderation step or kill switch.
 
 **Generated code** (planned)
 
@@ -575,9 +586,21 @@ The server keeps a few **pre-forged fallback spells** ready so the scene never g
 
 **Today** clients send with small JSON requests and receive pushed events over one **Server-Sent Events** stream each (`EventSource`), which works with the standard-library server and reconnects on its own when a phone wakes up. Errors come back as `{ error }` with a 4xx status.
 
+The scene hub uses one WebSocket per page (`/ws?role=player|mirror`) for the edit log, poses, and snapshot requests. Its routes need the Mac itself or the host key (`X-Host-Key`, or `?key=` on the WebSocket):
+
+| Scene request | Body → response |
+|---|---|
+| `GET /ws?role=player\|mirror` | WebSocket: `init` (the whole edit log), then each new `op`; players send `pose`, `commands`, `reply` (to snapshot requests), and `error` |
+| `GET /api/state` | → latest pose, live scene snapshot from the player, patch names, recent page errors, Quest performance stats (`?scene=0` skips the snapshot) |
+| `POST /api/chat` | `{ message, scene }` → `{ commands, text, model, ms }` (the scene editor chat box); the commands also go into the edit log |
+| `POST /api/commands` | `{ commands: [{ name, input }] }` → `{ seq, applied? }`, after the player reports applying them |
+| `POST /api/patch?id=NAME`, `DELETE /api/patch?id=NAME` | JavaScript body → whether it ran on the player; `DELETE` removes it |
+| `POST /api/reload`, `/api/reset` | reload every page (the log is replayed); reset also drops all edits |
+
+Game requests:
+
 | Request | Auth | Body → response |
 |---|---|---|
-| `POST /api/chat` | — | `{ message, scene }` → `{ commands, text, model, ms }` (the scene editor chat box) |
 | `GET /api/catalog` | — | → `shared/catalog.json` |
 | `GET /api/game/state` | — | → game state: `phase`, `remaining_s`, `cracks`, `charge`, `scores`, `teams`, `queue` counts per tier, `ready`, `in_flight` spells, `orbs`, `forge_online` |
 | `POST /api/join` | — | `{ name }` → `{ token, member, requests, cooldown_s }` |
@@ -627,8 +650,9 @@ All other paths are static files, served with `Cache-Control: no-store` so edits
 ```
 WorldTinder/
 ├── index.html          # WebXR scene + chat box (Three.js, no build step)
-├── serve.py            # static server + POST /api/chat, optional self-signed HTTPS
+├── serve.py            # static server, scene hub (edit log, /ws live sync, patches, /api/chat), mounts game/; optional HTTPS
 ├── scene_agent.py      # chat message + scene state → Claude → commands
+├── patches/            # example patches for POST /api/patch
 ├── game/
 │   ├── catalog.py         # loads shared/catalog.json
 │   ├── spell_request.py   # structured requests, tiers, preset resolution
@@ -682,12 +706,12 @@ midnight-egg/
 
 - **Rendering:** Three.js (0.170) with WebXR, loaded as ES modules from jsDelivr through an import map, so there is no bundler or build step. Addons in use: `GLTFLoader`, `OrbitControls` (desktop look-around), `VRButton`, `RoomEnvironment`.
 - **Testing without a headset:** `?emulate` loads IWER's emulated Meta Quest 3 and its DevUI from esm.sh.
-- **Server:** Python 3.12 standard library (`http.server.ThreadingHTTPServer`), set up with conda (`environment.yml`). The only dependency is `anthropic`, imported lazily so the viewer still works without it. Game updates are pushed with Server-Sent Events from the same `ThreadingHTTPServer` (one thread per open stream, which is fine for a room-sized audience); WebSocket would need an extra library, so it waits until the headset needs a high-rate channel such as scene snapshots.
+- **Server:** Python 3.12 standard library (`http.server.ThreadingHTTPServer`), set up with conda (`environment.yml`). The only dependency is `anthropic`, imported lazily so the viewer still works without it. Game updates are pushed with Server-Sent Events from the same `ThreadingHTTPServer` (one thread per open stream, which is fine for a room-sized audience). Scene sync uses a WebSocket, implemented in `serve.py` with just enough of RFC 6455 for JSON text messages, so it needs no extra library.
 - **Validation:** today, JSON-schema tool inputs plus `cleanSpec` in the browser. Once the LLM writes code, `acorn` (in the browser or a small Node helper) would parse it for the allowlist check.
 - **AI:** Claude, through the API (tool use) or the Claude Code CLI; default `claude-opus-5-5` at low effort, configurable per [LLM settings](#current-prototype). The plan is a fast model for spell forging and a stronger model for merge and hatch; ElevenLabs for TTS, sound effects, and speech-to-text.
 - **HTTPS is required** off localhost: the Quest browser only allows WebXR and microphone access on secure origins. `python serve.py --https` creates a self-signed certificate (accept the warning in the headset); alternatively use `adb reverse` over USB, or a tunnel (e.g., `cloudflared` or `ngrok`) so phones can reach the server too.
 - **Input:** controllers are the safest for flick detection (velocity of the wand tip); hand tracking is a stretch goal. Haptic pulses on catch and shield. Today controllers only show a pointer line, spawn a book on trigger, and drive movement and snap turning with the sticks.
-- **API keys** stay on the server only; clients never call the LLM or ElevenLabs directly. (True today: the browser only talks to `/api/chat`.)
+- **API keys** stay on the server only; clients never call the LLM or ElevenLabs directly. (True today: the browser only talks to this server, through `/api/chat`, `/ws`, and the game routes.)
 
 ---
 
