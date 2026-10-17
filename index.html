@@ -59,6 +59,9 @@
     // A "player" page is one someone is using (the headset, or a desktop tab); a "mirror" page (?mirror) follows
     // the player's head instead of taking input. See "Live sync" below.
     const ROLE = params.has('mirror') ? 'mirror' : 'player';
+    // The server only takes scene edits from its own machine, or with the host key it prints at startup:
+    // open the page as https://<mac-ip>:8443/#key=… on the Quest over Wi-Fi. In the hash, so page loads don't send it.
+    const HOST_KEY = new URLSearchParams(location.hash.slice(1)).get('key') || '';
 
     // ?emulate swaps in Meta's emulated Quest 3 (IWER) so "Enter VR" works on a Mac without a headset.
     // It must be installed before the VR button checks for WebXR support. Never loaded on the real headset.
@@ -472,7 +475,7 @@
       try {
         const res = await fetch('/api/chat', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Host-Key': HOST_KEY },
           body: JSON.stringify({ message, scene: sceneState() }),
         });
         const data = await res.json();
@@ -634,7 +637,7 @@
     }
 
     function connect() {
-      socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?role=${ROLE}`);
+      socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?role=${ROLE}&key=${encodeURIComponent(HOST_KEY)}`);
       socket.onopen = () => { syncEl.textContent = `Live sync: connected (${ROLE})`; };
       socket.onclose = () => {
         syncEl.textContent = 'Live sync: offline, retrying…';

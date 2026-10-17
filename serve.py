@@ -1,4 +1,4 @@
-"""Serve the WebXR preview (index.html + scene files) locally, and keep every open page in sync.
+"""Serve the WebXR preview (index.html + scene files), keep every open page in sync, and run the game server.
 
     python serve.py            # http://localhost:8000 — for previewing on the Mac, and the Quest over USB
     python serve.py --https    # https://<your-mac-ip>:8443 — for opening on the Quest over Wi-Fi
@@ -26,7 +26,7 @@ pages replay the log when they load. An edit is either
     Sending a patch with an existing name replaces the old one.
 The log lasts until the server restarts or is reset.
 
-HTTP API, e.g. with curl from this machine:
+Scene HTTP API, e.g. with curl from this machine:
   GET    /api/state            latest pose, live scene snapshot from the player, patch names, recent page errors,
                                and the Quest's own performance stats if adb can reach it (?scene=0 skips the snapshot)
   POST   /api/patch?id=NAME    body: the patch's JavaScript; replies with whether it ran on the player
@@ -35,8 +35,15 @@ HTTP API, e.g. with curl from this machine:
   POST   /api/reload           reload every page (edits are replayed)
   POST   /api/reset            drop all edits, and reload every page
 
-Patches run code in the pages, so the server only listens on this machine, except with --https, where anyone
-on your network can reach it.
+Game server
+-----------
+The game server (game/) handles the other /api/ routes (see game/http_api.py); the audience web app is at
+/audience/ and the host view at /host/. Phones join over the network, so the server listens on every interface.
+
+Patches run code in the pages, so /ws, /api/chat and the scene routes above only answer requests from this
+machine (which includes the Quest over USB with adb reverse), or ones carrying the host key: an X-Host-Key
+header, or ?key= on the WebSocket. Open the scene with #key=HOST_KEY to pass it from the Quest over Wi-Fi.
+The host key is WORLDTINDER_HOST_KEY, or a random one printed at startup.
 """
 
 import argparse
@@ -44,8 +51,12 @@ import base64
 import collections
 import functools
 import hashlib
+import hmac
 import http.server
 import json
+import os
+import re
+import secrets
 import socket
 import ssl
 import struct
@@ -56,9 +67,15 @@ import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from game.catalog import Catalog
+from game.engine import GameEngine
+from game.events import EventHub
+from game.http_api import GameAPI
+
 ROOT = Path(__file__).resolve().parent
 CERT_DIR = ROOT / ".certs"
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"  # fixed by the WebSocket spec (RFC 6455)
+SCENE_POST_ROUTES = {"/api/chat", "/api/patch", "/api/commands", "/api/reload", "/api/reset"}  # the rest are the game's
 
 
 class WebSocket:
@@ -276,6 +293,8 @@ def watch_headset():
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    game_api = None  # set in main()
+    host_key = None  # set in main()
     extensions_map = {
         **http.server.SimpleHTTPRequestHandler.extensions_map,
         ".gltf": "model/gltf+json",
@@ -283,6 +302,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ".bin": "application/octet-stream",
         ".js": "text/javascript",
     }
+
+    def log_message(self, format, *args):
+        # EventSource and the WebSocket put the audience token or host key in the URL; keep them out of the log.
+        super().log_message(format, *(re.sub(r"\b(token|key)=[^&\s\"]+", r"\1=…", a) if isinstance(a, str) else a for a in args))
 
     def end_headers(self):
         # Always serve fresh files so edits show up on reload.
@@ -294,19 +317,37 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         origin = self.headers.get("Origin")
         return origin is None or urlparse(origin).netloc == self.headers.get("Host")
 
+    def scene_allowed(self, url):
+        """Scene routes run code in the pages: only this machine (and the Quest over adb reverse), or the host key."""
+        if self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+            return True
+        key = self.headers.get("X-Host-Key") or parse_qs(url.query).get("key", [""])[0]
+        return bool(self.host_key) and hmac.compare_digest(key.encode(), self.host_key.encode())
+
     def do_GET(self):
         url = urlparse(self.path)
+        if url.path in ("/ws", "/api/state") and not self.scene_allowed(url):
+            return self.send_error(403, "Host key required")
         if url.path == "/ws":
             self.open_websocket(url)
         elif url.path == "/api/state":
             self.send_json(hub.state(include_scene=parse_qs(url.query).get("scene") != ["0"]))
+        elif url.path.startswith("/api/"):
+            if not self.game_api.handle(self, "GET"):
+                self.send_error(404)
         else:
             super().do_GET()
 
     def do_POST(self):
         url = urlparse(self.path)
+        if url.path not in SCENE_POST_ROUTES:
+            if not self.game_api.handle(self, "POST"):
+                self.send_error(404)
+            return
         if not self.same_origin():
             return self.send_error(403, "Cross-origin request refused")
+        if not self.scene_allowed(url):
+            return self.send_error(403, "Host key required")
         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         if url.path == "/api/chat":
             self.chat(body)
@@ -333,6 +374,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_error(403, "Cross-origin request refused")
         if url.path != "/api/patch":
             return self.send_error(404)
+        if not self.scene_allowed(url):
+            return self.send_error(403, "Host key required")
         self.patch(url, None)
 
     def patch(self, url, code):
@@ -415,9 +458,15 @@ def main():
 
     port = args.port or (8443 if args.https else 8000)
     ip = lan_ip()
+    events = EventHub()
+    engine = GameEngine(Catalog.load(), events)
+    engine.start()
+    host_key = os.environ.get("WORLDTINDER_HOST_KEY") or secrets.token_urlsafe(8)
+    Handler.game_api = GameAPI(engine, events, host_key)
+    Handler.host_key = host_key
     handler = functools.partial(Handler, directory=str(ROOT))
-    # Over USB, adb reverse delivers the Quest's requests to localhost, so plain HTTP only needs to listen locally.
-    server = http.server.ThreadingHTTPServer(("0.0.0.0" if args.https else "127.0.0.1", port), handler)
+    # Phones join the game over the network; the scene routes check scene_allowed() themselves.
+    server = http.server.ThreadingHTTPServer(("0.0.0.0", port), handler)
 
     if args.https:
         cert, key = ensure_cert(ip)
@@ -425,18 +474,23 @@ def main():
         ctx.load_cert_chain(cert, key)
         server.socket = ctx.wrap_socket(server.socket, server_side=True)
         print(f"Mac:   https://localhost:{port}   (mirror of the headset: https://localhost:{port}/?mirror)")
-        print(f"Quest: https://{ip}:{port}   (same Wi-Fi; accept the certificate warning)")
+        print(f"Quest: https://{ip}:{port}/#key={host_key}   (same Wi-Fi; accept the certificate warning)")
     else:
         print(f"Mac:   http://localhost:{port}   (mirror of the headset: http://localhost:{port}/?mirror)")
         print(f"Quest: plug in USB, run `adb reverse tcp:{port} tcp:{port}`, then open http://localhost:{port}")
         print("       (or restart with --https to use Wi-Fi)")
-    print(f"State: curl -s localhost:{port}/api/state")
+    base = f"{'https' if args.https else 'http'}://{ip}:{port}"
+    print(f"Audience: {base}/audience/   (phones on the same network{'' if args.https else '; WebXR still needs HTTPS or localhost'})")
+    print(f"Host:     {base}/host/#key={host_key}   (roster, live queue, start / reset)")
+    print(f"State: curl -s localhost:{port}/api/state   (game: /api/game/state)")
     threading.Thread(target=watch_headset, daemon=True).start()
 
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        engine.stop()
 
 
 if __name__ == "__main__":
