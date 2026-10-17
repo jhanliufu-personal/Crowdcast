@@ -20,9 +20,13 @@ class Catalog:
         self.spells = {s["id"]: s for s in data["spells"]}
         self.default_motion = data["default_motion"]
         self.channel_ms = data["channel_ms"]
+        self.shapes = data["shapes"]  # what the headset can render today (makeShape in index.html)
         for s in self.spells.values():
             if s["asset"] not in self.assets or s["motion"] not in self.motions:
                 raise ValueError(f"catalog spell {s['id']!r} uses an unknown asset or motion")
+        for a in self.assets.values():
+            if a["shape"] not in self.shapes:
+                raise ValueError(f"catalog asset {a['id']!r} has unknown shape {a['shape']!r}")
         if self.default_motion not in self.motions:
             raise ValueError(f"unknown default_motion {self.default_motion!r}")
 

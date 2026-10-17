@@ -56,6 +56,7 @@
     .req .what { grid-column: 2; font-size: 14px; overflow-wrap: anywhere; }
     .req .side { grid-row: 1 / span 2; grid-column: 3; text-align: right; font-size: 12px; color: var(--muted); white-space: nowrap; }
     .tier { font-size: 12px; font-weight: 700; }
+    .stage { font-size: 12px; color: var(--accent); }
     .tier.preset { color: var(--preset); } .tier.remix { color: var(--remix); } .tier.novel { color: var(--novel); }
     .chip { display: inline-block; padding: 0 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.08); }
 
@@ -100,10 +101,6 @@
           <ol class="rows" id="queue"></ol>
         </section>
         <section class="card">
-          <h2>Forging <span class="count" id="forging-count"></span></h2>
-          <ul class="rows" id="forging"></ul>
-        </section>
-        <section class="card">
           <h2>Ready <span class="count" id="ready-count"></span></h2>
           <ul class="rows" id="ready"></ul>
         </section>
@@ -128,7 +125,7 @@
     const TIERS = { preset: '⚡ Preset', remix: '✨ Remix', novel: '🔮 Novel' };
     const PHASES = { lobby: 'Lobby', dusk: 'Dusk', storm: 'Storm', midnight: 'Midnight', over: 'Round over' };
     const EMPTY = {
-      queue: 'Nothing waiting.', forging: 'Nothing with the LLM.',
+      queue: 'Nothing waiting.',
       ready: 'Nothing ready.', in_flight: 'No spells in the air.',
     };
 
@@ -234,6 +231,14 @@
       $('#start').textContent = state.phase === 'over' ? 'New round' : 'Start round';
     }
 
+    // Where a request is within its list: claimed by a forge (still queued until it acks), or sent but not yet confirmed by the headset.
+    function stage(r) {
+      if (r.lease) return el('div', { className: 'stage', textContent: `forging · try ${r.lease.attempt} · ${Math.round(r.lease.seconds_left)}s left` });
+      if (r.status === 'sent') return el('div', { className: 'stage', textContent: 'sent, awaiting headset' });
+      if (r.status === 'cast') return el('div', { className: 'stage', textContent: 'in the scene' });
+      return null;
+    }
+
     function requestRow(r, list) {
       const li = el('li', { className: 'req' },
         el('span', { className: 'pos', textContent: list === 'queue' ? `#${r.ahead + 1}` : '' }),
@@ -241,6 +246,7 @@
         el('span', { className: 'side' },
           el('div', { className: `tier ${r.tier}`, textContent: TIERS[r.tier] }),
           el('div', { className: 'age', textContent: ago(r.created_at), dataset: { created: r.created_at } }),
+          stage(r),
         ),
         el('span', { className: 'what' }, r.spell ? `${r.spell.name} · “${r.spell.incantation}” ` : '', r.spell ? null : describe(r.parts)),
       );
@@ -250,7 +256,7 @@
 
     function renderView() {
       if (!view) return;
-      for (const list of ['queue', 'forging', 'ready', 'in_flight']) {
+      for (const list of ['queue', 'ready', 'in_flight']) {
         const rows = view[list];
         $(`#${list}-count`).textContent = rows.length;
         $(`#${list}`).replaceChildren(...(rows.length ? rows.map((r) => requestRow(r, list)) : [el('li', { className: 'empty', textContent: EMPTY[list] })]));

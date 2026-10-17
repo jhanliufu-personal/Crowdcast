@@ -19,14 +19,15 @@ You are a young wizard on top of a castle tower, guarding a magical egg until mi
 4. [Architecture](#architecture)
 5. [The scene graph and the scene code](#the-scene-graph-and-the-scene-code)
 6. [How the LLM edits the scene](#how-the-llm-edits-the-scene)
-7. [Voice and audio (ElevenLabs)](#voice-and-audio-elevenlabs)
-8. [Safety and guardrails](#safety-and-guardrails)
-9. [Latency budget](#latency-budget)
-10. [Network protocol](#network-protocol)
-11. [Project structure](#project-structure)
-12. [Tech stack and setup notes](#tech-stack-and-setup-notes)
-13. [MVP vs stretch goals](#mvp-vs-stretch-goals)
-14. [Demo script](#demo-script)
+7. [Acknowledgements and the forge contract (LLM harness)](#acknowledgements-and-the-forge-contract-llm-harness)
+8. [Voice and audio (ElevenLabs)](#voice-and-audio-elevenlabs)
+9. [Safety and guardrails](#safety-and-guardrails)
+10. [Latency budget](#latency-budget)
+11. [Network protocol](#network-protocol)
+12. [Project structure](#project-structure)
+13. [Tech stack and setup notes](#tech-stack-and-setup-notes)
+14. [MVP vs stretch goals](#mvp-vs-stretch-goals)
+15. [Demo script](#demo-script)
 
 ---
 
@@ -41,7 +42,7 @@ No build step and no dependencies beyond the standard library (plus `anthropic` 
 | `scene_agent.py` | Turns one chat message plus the current scene state into scene-editing commands using Claude (see [How the LLM edits the scene](#how-the-llm-edits-the-scene)). |
 | `game/` | The game server: audience members and teams, structured spell requests, the priority request queue, the round (acts, clock, cracks, charge, scores), and the HTTP + Server-Sent Events API. Mounted by `serve.py`. |
 | `audience/index.html` | The audience web app for phones, served at `/audience/`. |
-| `host/index.html` | The host console at `/host/`: roster of everyone who joined (and who is connected), the live queue in serving order, what is forging, ready, and in the sky, and Start / Reset round. |
+| `host/index.html` | The host console at `/host/`: roster of everyone who joined (and who is connected), the live queue in serving order (including requests a forge is working on, with their attempt and time left), what is ready and in the sky (sent, or confirmed in the scene by the headset), and Start / Reset round. |
 | `shared/catalog.json` | The ready-made building blocks: assets, motions, and preset spells. |
 
 **What works today**
@@ -53,7 +54,7 @@ No build step and no dependencies beyond the standard library (plus `anthropic` 
 - From the browser console, `sceneState()` shows exactly what is sent to the LLM and `applyCommands([...])` applies edits without calling it.
 - **Game server skeleton:** audience members join from any number of phones, get sorted into teams, and compose spells from building blocks and free text. Requests are queued by tier (see [Spell requests and the queue](#spell-requests-and-the-queue)); ready-made ones are resolved from the catalog and cast immediately, paced by the act. The server runs the 3-minute round and scores hit / catch / shield / return reports from the headset.
 
-**Not built yet:** the LLM dispatch for remix and novel requests (they wait in the queue, and the app says the forge is offline), the headset side of the game (`index.html` doesn't yet subscribe to cast spells or report outcomes, so cast spells fizzle after 20 s), the castle tower, egg, wand/shield input, spectator view, midnight merge, hatched creature, ElevenLabs audio, and generated code modules. The chat box in `index.html` still edits the scene directly, separately from the game.
+**Not built yet:** the LLM forge for remix and novel requests (they wait in the queue, and the app says the forge is offline; the interface is ready, see [the forge contract](#acknowledgements-and-the-forge-contract-llm-harness)), the headset side of the game (`index.html` doesn't yet subscribe to cast spells, confirm them, or report outcomes, so cast spells stay `sent`), the castle tower, egg, wand/shield input, spectator view, midnight merge, hatched creature, ElevenLabs audio, and generated code modules. The chat box in `index.html` still edits the scene directly, separately from the game.
 
 **Run it**
 
@@ -198,11 +199,11 @@ The server validates every piece against the catalog (at most 8 pieces and 120 c
 | ✨ **Remix** | At least one existing spell or asset, plus text or several blocks to combine | The LLM makes a small, local edit (new motion for an existing asset, a recolor, a combination) | Second |
 | 🔮 **Novel** | Text with no spell or asset to start from (a motion block is allowed as a hint) | The LLM builds the whole spell | Last |
 
-The queue is first come, first served within a tier. The dispatcher always takes presets and takes remix and novel requests only when the LLM has free capacity, so a preset submitted later still overtakes a novel request waiting for the LLM. Resolved spells wait in a **ready** stage and are cast when the current act has room (dusk 2, storm 5, midnight 3 spells in the sky at once). Spells cast before the round starts wait in the ready stage for dusk.
+The queue is first come, first served within a tier. The engine always takes presets and takes remix and novel requests only when the LLM forge has free capacity, so a preset submitted later still overtakes a novel request waiting for the LLM. A request leaves the queue only when the forge acknowledges it (see [Acknowledgements and the forge contract](#acknowledgements-and-the-forge-contract-llm-harness)). Resolved spells wait in a **ready** stage and are cast when the current act has room (dusk 2, storm 5, midnight 3 spells in the sky at once). Spells cast before the round starts wait in the ready stage for dusk.
 
-Each member gets a 15 s cooldown and can have only one spell in the queue, forging, or ready at a time; this keeps parallel input fair at low to medium traffic. Request statuses: `queued` (with how many are ahead) → `forging` → `ready` → `cast` → `hit` / `caught` / `shielded` / `fizzled`, or `failed` / `expired`.
+Each member gets a 15 s cooldown and can have only one spell in the queue, forging, or ready at a time; this keeps parallel input fair at low to medium traffic. Request statuses: `queued` (with how many are ahead) → `forging` (claimed, still in the queue) → `ready` → `sent` (to the headset) → `cast` (the headset confirmed it) → `hit` / `caught` / `shielded` / `fizzled`, or `failed` / `expired`.
 
-The LLM side plugs in at `game/dispatch.py`: an object with `has_capacity()` and `submit(request, catalog, done)` that calls `done(request, spell, error)` when finished. Until one exists, `NotConnectedDispatcher` reports no capacity, so remix and novel requests stay queued.
+The LLM side plugs in at `game/forge.py`; see [the forge contract](#acknowledgements-and-the-forge-contract-llm-harness). Until a forge is connected, `NotConnectedForge` has zero capacity, so remix and novel requests stay queued.
 
 ---
 
@@ -406,6 +407,112 @@ queue ──▶ headset: caster chants (spatial audio) ──▶ cast() runs ─
 
 ---
 
+## Acknowledgements and the forge contract (LLM harness)
+
+*Built. **LLM harness team: this is the interface you plug into.** It lives in [`game/forge.py`](game/forge.py) (interface and docstring), [`game/spell_request.py`](game/spell_request.py) (`validate_spell`, the spell you send back), and [`game/engine.py`](game/engine.py) (`LEASE_SECONDS`, `MAX_ATTEMPTS`).*
+
+A request is only removed when the next stage **acknowledges** it. There are two hand-offs, each with its own ack:
+
+```
+QUEUE                                       FORGE
+queued ──claim (lease)──▶ forging ────────▶ PRESET:       CatalogForge, acks at once
+   ▲                         │              REMIX / NOVEL: your LLM forge, acks later
+   │                         │                    │
+   └── nack / lease timeout ─┘                    │ job.ack(spell) → validated → removed from queue
+       (same place; fails after 2 tries)          ▼
+                                                ready ──(paced by the act)──▶ sent ──spell:cast──▶ HEADSET
+                                                                                │
+                                        POST /api/headset/event {type: "spawned"}
+                                                                                ▼
+                                                                    cast (in the scene) ──▶ hit / caught / shielded / fizzled
+```
+
+### Hand-off 1: forge → "the spell is built"
+
+- The engine **claims** the first request it can serve. The request keeps its place in the queue with status `forging` and is handed to a forge as a `ForgeJob` carrying a **lease** (request id, attempt number, queue generation, deadline).
+- **Presets and LLM requests use the same contract.** `CatalogForge` resolves presets from the catalog and calls `job.ack()` before returning, so presets go through claim → ack → remove in microseconds. Remix and novel jobs go to the LLM forge, which acks whenever it finishes. The queue doesn't care which forge ran.
+- `job.ack(spell)` removes the request from the queue, checks the spell with `validate_spell`, and moves it to the ready stage. If the spell fails validation, it counts as a nack.
+- `job.nack(error)`, or a lease that runs out, puts the request back **at its original position**. After `MAX_ATTEMPTS` (2) claims it is removed and marked `failed` with the error.
+- Lease length depends on the tier: `LEASE_SECONDS` = preset 5 s, remix 20 s, novel 60 s.
+- **Reset** clears the whole queue, including claimed requests, and bumps the queue generation. That invalidates every outstanding lease, so an LLM call that finishes after the reset gets `False` back from `ack()` and its result is dropped. The same happens to an answer that arrives after its lease ran out and the request was handed out again.
+- LLM capacity: the engine never has more remix/novel jobs claimed than your forge's `capacity`. A preset submitted later still overtakes requests waiting for LLM capacity.
+
+### Hand-off 2: headset → "the spell is in the scene"
+
+- When a ready spell gets a slot in the sky, the server sends `spell:cast` to the headset and marks it `sent`. A sent spell isn't treated as in the scene yet.
+- The headset confirms with `POST /api/headset/event {"type": "spawned", "spell_id": …}`; the spell becomes `cast`, and only then does its 20 s fizzle timer start. Repeat confirmations are harmless, and an outcome report (`hit`, `catch`, `shield`) also counts as confirmation.
+- Sent but unconfirmed spells are **sent again whenever a headset connects** to `/api/events?role=headset`, so a headset that drops or reloads doesn't lose them. They keep their slot in the sky until confirmed. Without a headset they stay `sent`; for testing, confirm them with `curl`.
+
+### For the LLM harness: what to implement
+
+**1. A forge object** with two members (see the docstring at the top of [`game/forge.py`](game/forge.py)):
+
+```python
+class LLMForge:
+    capacity = 2                 # max jobs running at once; the engine never hands you more
+    online = True                # optional; False makes the apps say "the forge is offline"
+
+    def submit(self, job):       # must return quickly: do the work on another thread
+        threading.Thread(target=self._run, args=(job,), daemon=True).start()
+
+    def _run(self, job):
+        try:
+            brief = job.brief()                      # what to make (below)
+            spell = call_the_llm(brief, timeout=job.seconds_left())
+            if not job.is_current():                 # reset or timed out meanwhile: drop it
+                return
+            if not job.ack(spell):                   # False: stale, or the spell failed validation (see the log)
+                ...
+        except Exception as err:
+            job.nack(str(err))                       # always answer: otherwise the lease has to run out
+```
+
+Wire it in where `serve.py` creates the engine: `GameEngine(Catalog.load(), hub, llm_forge=LLMForge())`.
+
+**2. Input:** `job.brief()` returns the request with every building block expanded to its full catalog entry:
+
+```json
+{ "request_id": "s7", "tier": "remix", "attempt": 1,
+  "text": "that splits into three",
+  "parts": [
+    { "type": "ingredient", "kind": "asset", "id": "fireball",
+      "block": { "label": "Fireball", "shape": "sphere", "color": "#ff6a1f", "size": 0.3, "glow": true, "...": "..." } },
+    { "type": "text", "text": "that splits into three" } ] }
+```
+
+`job.catalog` has the rest of the menu (`shapes`, `assets`, `motions`, preset `spells`), and `job.request` is the full `SpellRequest` (read only).
+
+- **Remix:** keep the referenced blocks and make the change the text asks for.
+- **Novel:** build it from the shapes and motions the catalog offers.
+
+**3. Output:** `job.ack(spell)` with a dict that passes `validate_spell` in [`game/spell_request.py`](game/spell_request.py):
+
+| Field | Required | Rule |
+|---|---|---|
+| `name` | yes | non-empty string, ≤ 40 characters |
+| `incantation` | yes | one word, 2–20 letters (apostrophe and hyphen allowed); the player shouts it back |
+| `asset.shape` | yes | one of `catalog.shapes` (what the headset can render today: `box`, `sphere`, `cylinder`, `cone`, `torus`, `book`) |
+| `asset.color` | yes | `#rrggbb` |
+| `asset.size`, `asset.glow` | no | meters, clamped to 0.05–1.5 (default 0.3); bool (default false) |
+| `motion.id` | yes | a catalog motion id (`straight`, `homing`, `zigzag`, `spiral`, `arc`, `boomerang`) |
+| `motion.speed` | no | clamped to 0.5–5 (default: the catalog motion's) |
+| `power` | no | integer 0–5, default 1 (charge when caught) |
+| `channel_ms` | no | 500–6000, default 2500 |
+| anything else | no | passed through to the headset unchanged (e.g. future generated `code`) |
+
+`resolve_preset()` in the same file builds a valid spell from catalog blocks; a remix can start from it and change fields.
+
+**4. Rules**
+
+- Answer every job **exactly once**, with `ack` or `nack`, from any thread.
+- `ack` and `nack` return `True` if the answer was accepted. `False` means the job was no longer current (reset, lease expired, already answered) or, for `ack`, the spell failed validation. The reason is logged as a warning by `game.engine`, and the request is retried. Never retry an `ack` with the same job; the engine hands the request out again as a new job.
+- Finish within the lease (`job.seconds_left()`), and check `job.is_current()` before expensive steps so you can stop work after a reset.
+- Don't touch the engine, queue, or request objects directly.
+
+**5. Testing without the server:** the `FakeForge` in [`tests/test_game.py`](tests/test_game.py) is the smallest forge there is: it collects jobs, and the tests answer them by hand. `python -m unittest discover tests` runs the suite, including leases, retries, reset, and validation.
+
+---
+
 ## Voice and audio (ElevenLabs)
 
 | Use | API | Notes |
@@ -477,19 +584,19 @@ The server keeps a few **pre-forged fallback spells** ready so the scene never g
 | `GET /api/me` | `X-Token` | → `{ member, requests, cooldown_s }` |
 | `POST /api/spells` | `X-Token` | `{ parts }` → `{ request, member, requests, cooldown_s }`; 429 with `retry_after` while cooling down |
 | `GET /api/events?role=…` | `token` query param for `audience`, `key` for `host` | SSE stream for `audience`, `headset`, `spectator`, or `host` |
-| `POST /api/headset/event` | `X-Host-Key` | `{ type: "hit" \| "catch" \| "shield" \| "return", spell_id, target_member_id? }` → game state |
+| `POST /api/headset/event` | `X-Host-Key` | `{ type: "spawned" \| "hit" \| "catch" \| "shield" \| "return", spell_id, target_member_id? }` → game state. `spawned` confirms a `spell:cast` arrived in the scene. |
 | `POST /api/admin/start`, `/api/admin/reset` | `X-Host-Key` | → game state |
-| `GET /api/admin/view` | `X-Host-Key` | → `{ roster, queue, forging, ready, in_flight }`, the same as `host:view` |
+| `GET /api/admin/view` | `X-Host-Key` | → `{ roster, queue, ready, in_flight }`, the same as `host:view` |
 
 | SSE event | To | Payload |
 |---|---|---|
 | `game:state` | all | game state, every second and on every change |
 | `me` | that audience member, on connect | `{ member, requests, cooldown_s }` |
 | `spell:status` | the caster | `{ id, tier, status, parts, ahead?, spell?: { name, incantation }, error? }` |
-| `spell:cast` | headset, spectator | full spell: `id`, `name`, `incantation`, `power`, `channel_ms`, `asset`, `motion`, `caster` |
+| `spell:cast` | headset, spectator | full spell: `id`, `name`, `incantation`, `power`, `channel_ms`, `asset`, `motion`, `caster`. Sent again on headset connect until confirmed with `spawned`. |
 | `audience:buzz` | the member a spell was returned at | `{ spell, incantation, penalty }` |
 | `game:over` | all | `{ outcome: "hatched" \| "broken", charge, caught, scores, winners }` |
-| `host:view` | host, on connect and whenever it changes | `roster` (name, team, online, casts, hits, latest request) and the requests in `queue` (serving order, with `ahead`), `forging`, `ready`, `in_flight`, each with its `caster` |
+| `host:view` | host, on connect and whenever it changes | `roster` (name, team, online, casts, hits, latest request) and the requests in `queue` (serving order, with `ahead`; claimed ones have `status: "forging"` and `lease: { attempt, seconds_left }`), `ready`, `in_flight` (`sent` or `cast`), each with its `caster` |
 
 All other paths are static files, served with `Cache-Control: no-store` so edits show up on reload.
 
@@ -525,9 +632,9 @@ WorldTinder/
 ├── game/
 │   ├── catalog.py         # loads shared/catalog.json
 │   ├── spell_request.py   # structured requests, tiers, preset resolution
-│   ├── request_queue.py   # thread-safe priority queue (tier, then arrival)
+│   ├── request_queue.py   # priority queue (tier, then arrival) with claim / ack / nack and leases
 │   ├── engine.py          # members, teams, round, pacing, scoring
-│   ├── dispatch.py        # seam for the LLM forge (not connected yet)
+│   ├── forge.py           # forge interface for the LLM harness; CatalogForge for presets
 │   ├── events.py          # fan-out to SSE subscribers
 │   └── http_api.py        # /api/ routes
 ├── audience/index.html # phone web app
