@@ -860,7 +860,10 @@
     }
     $('#start').addEventListener('click', () => control('/api/admin/start'));
     $('#reset').addEventListener('click', () => {
-      if (confirm('Reset to the lobby? Every pending spell expires.')) control('/api/admin/reset');
+      // Also puts the scene back to scenes/master.json, which rewrites scenes/live.json and reloads every page.
+      if (confirm('Reset to the lobby and clear the scene? Every pending spell expires.')) {
+        control('/api/admin/reset').then(() => control('/api/reset'));
+      }
     });
 
     if (key) start();

@@ -41,7 +41,9 @@ No build step and no dependencies beyond the standard library (plus `anthropic` 
 | `index.html` | The WebXR scene (Three.js 0.170, vendored in `vendor/three/` and loaded through an import map, so it runs offline). Loads a glTF room (`library/scene.gltf` by default, or `?scene=path.gltf`), centers it with the floor at y=0, and keeps a set of **editable objects** in the scene graph. Also hosts a chat box that sends text to the server. Every open page joins **live sync** over a WebSocket (`/ws`) and applies the server's edit log; `?mirror` shows the headset's view. |
 | `serve.py` | Python standard-library HTTP server. Serves the static files, runs the **scene hub** (the ordered edit log every page applies, patches, the chat box's `POST /api/chat`, the player's live snapshot at `GET /api/state`), and mounts the game server. Always serves HTTP on port 8000; `--https` adds an HTTPS listener on 8443 (self-signed cert in `.certs/`, regenerated when the address changes) for the Quest over Wi-Fi. Works out the address phones should use (in WSL2, Windows' Wi-Fi address) and prints any setup still missing; see [Running the demo in one room](#running-the-demo-in-one-room). |
 | `patches/` | Example patches: named JavaScript snippets sent to every page with `POST /api/patch?id=NAME` (e.g. `walking-robot.js`). |
-| `scene_agent.py` | Turns one chat message plus the current scene state into scene-editing commands using Claude (see [How the LLM edits the scene](#how-the-llm-edits-the-scene)). |
+| `harness/` | **The harness:** Claude workers that make the game's remix and novel spells (the LLM forge) and the chat box's scene edits, several at once, with a speed-first, reuse-first policy written in Markdown files. Each cast spell becomes a three.js patch. See [`harness/README.md`](harness/README.md). |
+| `assets/` | The library the harness builds on: prebuilt objects, behaviors and models (`assets/index.json`), plus what models built (`assets/generated/`, not committed). |
+| `scene_agent.py` | The chat box's earlier, single-call Claude client. `serve.py` no longer uses it: its prompt and tools are now in `harness/workers/scene-editor.md` and `harness/tools/scene-commands.md`. |
 | `game/` | The game server: audience members and teams, structured spell requests, the priority request queue, the round (acts, clock, cracks, charge, scores), and the HTTP + Server-Sent Events API. Mounted by `serve.py`. |
 | `audience/index.html` | The audience web app for phones, served at `/audience/`. |
 | `join/index.html` | The join screen for the projector, at `/join/`: a QR code of the phones' address and a live count of who has joined. |
@@ -57,9 +59,10 @@ No build step and no dependencies beyond the standard library (plus `anthropic` 
 - **Patches:** `POST /api/patch?id=NAME` runs a named JavaScript snippet in every page without reloading (see `setPatch()` in `index.html` for what it can use); sending the same name replaces it, `DELETE` removes it.
 - `?emulate` loads Meta's IWER emulated Quest 3 (with on-screen DevUI controls) so "Enter VR" works on a laptop with no headset.
 - From the browser console, `sceneState()` shows exactly what is sent to the LLM and `applyCommands([...])` applies edits without calling it.
+- **Spells from the audience:** the harness makes remix and novel spells with Claude (reusing the library first: an exact match needs no call at all), the engine casts them, and the cast bridge sends each one to the headset as a patch that flies it at the player. Slice it with a controller blade (or a fast mouse flick on a `?headset` tab) to catch it. See [`harness/README.md`](harness/README.md).
 - **Game server skeleton:** audience members join from any number of phones, get sorted into teams, and compose spells from building blocks and free text. Requests are queued by tier (see [Spell requests and the queue](#spell-requests-and-the-queue)); ready-made ones are resolved from the catalog and cast immediately, paced by the act. The server runs the 3-minute round and scores hit / catch / shield / return reports from the headset.
 
-**Not built yet:** the LLM forge for remix and novel requests (they wait in the queue, and the app says the forge is offline; the interface is ready, see [the forge contract](#acknowledgements-and-the-forge-contract-llm-harness)), the headset side of the game (`index.html` doesn't yet subscribe to cast spells, confirm them, or report outcomes, so cast spells stay `sent`), the castle tower, egg, wand/shield input, spectator view, midnight merge, hatched creature, ElevenLabs audio, and generated code modules. The chat box and the scene hub are still separate from the game: spells don't go through the edit log yet.
+**Not built yet:** the castle tower, egg (spells aim at the player's head for now, and a spell that flies past counts as "shield"), wand/shield input, return by incantation, spectator view, midnight merge, hatched creature, and ElevenLabs audio.
 
 **Run it**
 
@@ -89,13 +92,15 @@ Guest Wi-Fi can block communication between devices even when they share a netwo
 If local access times out, use a network that allows device-to-device traffic, or ask its administrator
 to permit it. HTTPS alone cannot fix a blocked network path.
 
-**LLM settings** (environment variables read by `scene_agent.py`)
+**LLM settings** (the harness: [`harness/README.md`](harness/README.md))
 
-| Variable | Default | Meaning |
+| Setting | Default | Meaning |
 |---|---|---|
-| `WORLDTINDER_BACKEND` | `api` if `ANTHROPIC_API_KEY` is set, else `claude-cli` | `api` calls the Claude API with tool use (fastest). `claude-cli` runs the Claude Code CLI headless (`claude -p`) on your subscription, with all of its tools and MCP servers disabled; slower because each message starts a process. |
-| `WORLDTINDER_MODEL` | `claude-opus-5-5` | Model id, e.g. `claude-haiku-5-5` for lower latency. |
-| `WORLDTINDER_EFFORT` | `low` | Reasoning effort; raise it for complicated multi-object requests. |
+| `WORLDTINDER_BACKEND` (environment) or `backend` in `harness/orchestrator.md` | `claude-cli` | `claude-cli` runs the Claude Code CLI headless (`claude -p`) on your subscription, with all of its tools and MCP servers disabled and any API key removed from its environment; each call starts a process. `api` calls the Claude API with structured outputs (needs `ANTHROPIC_API_KEY`). |
+| `model`, `effort`, `max_tokens` in `harness/workers/*.md` | Haiku 5.5 for adapt and combine, Sonnet 5.5 for new spells and scene edits, effort `low` | Per worker. |
+| `slots`, `scene_max_slots` in `harness/orchestrator.md` | 4, 1 | How many Claude calls run at once, and how many of them scene edits may use. |
+
+Model-written spell code is checked with acorn (vendored in `vendor/acorn/`), so new code needs Node.js; without it, new spells fly as plain shapes.
 
 **Credits:** the room model is ["library"](https://sketchfab.com/3d-models/library-7fc61f0d65ee49d0b2904e85d1fa520e) by [Pasha](https://sketchfab.com/Pasha.), licensed under [CC-BY-4.0](http://creativecommons.org/licenses/by/4.0/) (see `library/license.txt`).
 
@@ -221,7 +226,7 @@ The queue is first come, first served within a tier. The engine always takes pre
 
 Each member gets a 15 s cooldown and can have only one spell in the queue, forging, or ready at a time; this keeps parallel input fair at low to medium traffic. Request statuses: `queued` (with how many are ahead) → `forging` (claimed, still in the queue) → `ready` → `sent` (to the headset) → `cast` (the headset confirmed it) → `hit` / `caught` / `shielded` / `fizzled`, or `failed` / `expired`.
 
-The LLM side plugs in at `game/forge.py`; see [the forge contract](#acknowledgements-and-the-forge-contract-llm-harness). Until a forge is connected, `NotConnectedForge` has zero capacity, so remix and novel requests stay queued.
+The LLM side plugs in at `game/forge.py`; see [the forge contract](#acknowledgements-and-the-forge-contract-llm-harness). `serve.py` connects the harness's forge (`harness/forge.py`); without one, `NotConnectedForge` has zero capacity, so remix and novel requests stay queued.
 
 ---
 
@@ -605,7 +610,9 @@ The scene hub uses one WebSocket per page (`/ws?role=player|mirror`) for the edi
 |---|---|
 | `GET /ws?role=player\|mirror` | WebSocket: `init` (the whole edit log), then each new `op`; players send `pose`, `commands`, `reply` (to snapshot requests), and `error` |
 | `GET /api/state` | → latest pose, live scene snapshot from the player, patch names, recent page errors, Quest performance stats (`?scene=0` skips the snapshot) |
-| `POST /api/chat` | `{ message, scene }` → `{ commands, text, model, ms }` (the scene editor chat box); the commands also go into the edit log |
+| `POST /api/chat` | `{ message, scene }` → `{ commands, text, model, ms }` (the scene editor chat box, through the harness's scene queue); the commands also go into the edit log |
+| `POST /api/scene/requests` | `{ text, tags?, wait? }` → the queued scene job (`{ id, status, result? }`); tags are in `harness/tags.md` |
+| `GET /api/harness` | → slots, running jobs, the scene queue, recent jobs (step, model, time), reuse rate, library counts |
 | `POST /api/commands` | `{ commands: [{ name, input }] }` → `{ seq, applied? }`, after the player reports applying them |
 | `POST /api/patch?id=NAME`, `DELETE /api/patch?id=NAME` | JavaScript body → whether it ran on the player; `DELETE` removes it |
 | `POST /api/reload`, `/api/reset` | reload every page (the log is replayed); reset also drops all edits |
@@ -665,7 +672,9 @@ All other paths are static files, served with `Cache-Control: no-store` so edits
 WorldTinder/
 ├── index.html          # WebXR scene + chat box (Three.js, no build step)
 ├── serve.py            # static server, scene hub (edit log, /ws live sync, patches, /api/chat), mounts game/; LAN address detection, optional HTTPS listener
-├── scene_agent.py      # chat message + scene state → Claude → commands
+├── harness/            # Claude workers for spells and scene edits: rules in .md files, code in .py (see harness/README.md)
+├── assets/             # the library: prebuilt objects, behaviors and models; generated/ holds what models built (not committed)
+├── scene_agent.py      # the earlier single-call chat client (not used by serve.py any more)
 ├── patches/            # example patches for POST /api/patch
 ├── game/
 │   ├── catalog.py         # loads shared/catalog.json

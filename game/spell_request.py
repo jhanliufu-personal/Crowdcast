@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
 
-from .catalog import KINDS
+from .catalog import KINDS, TARGETS
 
 MAX_PARTS = 8
 MAX_TEXT = 120  # characters of free text across the whole request
@@ -157,7 +157,7 @@ def resolve_preset(recipe, catalog):
         "name": name,
         "incantation": incantation,
         "power": power,
-        "channel_ms": catalog.channel_ms,
+        "channel_ms": catalog.preset_channel_ms,
         "asset": dict(a),
         "motion": dict(m),
     }
@@ -196,6 +196,7 @@ def validate_spell(spell, catalog):
             return default
 
     base_motion = catalog.motions[motion["id"]]
+    spell = {k: v for k, v in spell.items() if k != "target" or v in TARGETS}  # the engine picks one if it's missing
     return {
         **spell,
         "name": name.strip(),

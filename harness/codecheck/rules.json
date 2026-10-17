@@ -1,0 +1,17 @@
+{
+  "_comment": "Shared by check.mjs (static check before a spell is acked) and the spell runtime patch (the runtime guard on computed property names). Edit both lists here only.",
+  "max_chars": 4000,
+  "globals": ["THREE", "api", "spell", "params", "Math", "Number", "Array", "String", "Boolean", "Infinity", "NaN", "undefined", "isFinite", "isNaN", "parseFloat", "parseInt"],
+  "deny_members": [
+    "constructor", "prototype", "__proto__", "__defineGetter__", "__defineSetter__", "__lookupGetter__", "__lookupSetter__",
+    "caller", "callee", "arguments", "call", "apply", "bind",
+    "window", "document", "globalThis", "self", "top", "opener", "frames", "location", "navigator", "cookie",
+    "localStorage", "sessionStorage", "indexedDB", "ownerDocument", "defaultView", "contentWindow", "contentDocument",
+    "getRootNode", "parent", "parentNode", "traverseAncestors", "scene", "renderer", "domElement", "image", "source",
+    "onBeforeCompile", "onBeforeRender", "onAfterRender", "onBeforeShadow", "onAfterShadow",
+    "addEventListener", "dispatchEvent", "eval", "fetch", "postMessage", "setTimeout", "setInterval",
+    "requestAnimationFrame", "load", "loadAsync", "parse", "parseAsync", "getPrototypeOf", "setPrototypeOf",
+    "defineProperty", "defineProperties", "getOwnPropertyDescriptor", "raw", "fromCodePoint", "repeat"
+  ],
+  "deny_member_pattern": "Loader|Renderer|Shader|Worker|WebGL|Cache|ImageUtils|Audio|Function|XMLHttp|WebSocket|Storage|Element|Canvas"
+}

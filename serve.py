@@ -14,9 +14,10 @@ The address phones should use is worked out automatically (in WSL2 with NAT netw
 asking Windows for its Wi-Fi address, and printing the port forward Windows still needs).
 Override it with --join-host or WORLDTINDER_JOIN_HOST.
 
-The chat box posts to /api/chat, handled by scene_agent.py with the Claude API. Set your key in
-the shell before starting the server (export ANTHROPIC_API_KEY=...); it stays on this machine.
-Optional: WORLDTINDER_MODEL (default claude-opus-5-5) and WORLDTINDER_EFFORT (default low).
+Claude work (the chat box's scene edits, the game's REMIX and NOVEL spells) goes through the harness
+(harness/README.md). By default it runs `claude -p` on your Claude subscription; WORLDTINDER_BACKEND=api uses the
+Claude API instead (export ANTHROPIC_API_KEY=... in the shell first; the key stays on this machine). Models and
+effort are set per worker in harness/workers/*.md.
 
 One headset, many viewers
 -------------------------
@@ -50,6 +51,14 @@ Scene HTTP API, e.g. with curl from this machine:
   POST   /api/reload           reload every page (the edit log is replayed)
   POST   /api/reset            replace the live scene with the master, and reload every page
   POST   /api/master           make the live scene the new master (overwrites scenes/master.json)
+
+Harness (harness/README.md)
+-------
+Claude workers make the game's REMIX and NOVEL spells and the chat box's scene edits, several at once. Each cast
+spell becomes a patch ("spell-<id>"), which is "transient": it is never saved to scenes/live.json.
+  POST   /api/chat             the chat box: {message, scene} -> {commands, text, model, ms}, through the scene queue
+  POST   /api/scene/requests   body: {"text": ..., "tags": [...], "wait": false} -> the queued job
+  GET    /api/harness          slots, running jobs, the scene queue, recent results and timings, the library
 
 Game server
 -----------
@@ -91,17 +100,18 @@ import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from game.catalog import Catalog
+from game.catalog import TARGET_MODES, Catalog
 from game.engine import GameEngine
 from game.events import EventHub
 from game.http_api import GameAPI
+from harness import Harness
 
 ROOT = Path(__file__).resolve().parent
 CERT_DIR = ROOT / ".certs"
 MASTER = ROOT / "scenes" / "master.json"
 LIVE = ROOT / "scenes" / "live.json"
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"  # fixed by the WebSocket spec (RFC 6455)
-SCENE_POST_ROUTES = {"/api/chat", "/api/patch", "/api/commands", "/api/reload", "/api/reset", "/api/master"}  # the rest are the game's
+SCENE_POST_ROUTES = {"/api/chat", "/api/patch", "/api/commands", "/api/reload", "/api/reset", "/api/master", "/api/scene/requests"}  # the rest are the game's
 
 
 class WebSocket:
@@ -181,6 +191,7 @@ class Hub:
         self.perf = None  # latest performance stats from the Quest itself, see watch_headset()
         self.errors = collections.deque(maxlen=30)
         self.pending = {}  # request id -> {"event", "from": the page whose reply counts, "reply"}
+        self.on_game_event = None  # set by the harness: messages from the headset's spell runtime
         self.load(LIVE if LIVE.exists() else MASTER)
 
     # --- the edit log ---
@@ -205,7 +216,8 @@ class Hub:
         """Rewrite scenes/live.json (via a temporary file, so a crash can't leave half of it)."""
         LIVE.parent.mkdir(exist_ok=True)
         tmp = LIVE.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"saved": time.strftime("%Y-%m-%d %H:%M:%S"), "ops": self.ops}))
+        ops = [o for o in self.ops if not o.get("transient")]  # spells: only for this session
+        tmp.write_text(json.dumps({"saved": time.strftime("%Y-%m-%d %H:%M:%S"), "ops": ops}))
         os.replace(tmp, LIVE)
 
     def save_master(self):
@@ -220,8 +232,10 @@ class Hub:
             op = {"seq": self.seq, **op, "by": by, "time": time.strftime("%H:%M:%S")}
             if op["kind"] == "patch":  # only the newest version of a patch needs replaying
                 self.ops = [o for o in self.ops if not (o["kind"] == "patch" and o["id"] == op["id"])]
-            self.ops.append(op)
-            self.save()
+            if not (op.get("transient") and op.get("code") is None):  # a removed spell leaves nothing to replay
+                self.ops.append(op)
+            if not op.get("transient"):
+                self.save()
             self.broadcast({"type": "op", "op": {**op, "rid": rid}})
         return op
 
@@ -288,6 +302,8 @@ class Hub:
                 entry["event"].set()
         elif kind == "error":
             self.errors.append({"time": time.strftime("%H:%M:%S"), "page": ws.role, "message": msg.get("message")})
+        elif kind == "game" and ws is self.headset() and self.on_game_event:  # spell outcomes and code errors
+            self.on_game_event(ws, msg)
 
     def broadcast(self, message):
         with self.lock:
@@ -430,6 +446,7 @@ def watch_headset(hub):
 
 
 hub = None  # created in main()
+harness = None  # created in main()
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -469,7 +486,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         url = urlparse(self.path)
-        if url.path in ("/ws", "/api/state") and not self.scene_allowed(url):
+        if url.path in ("/ws", "/api/state", "/api/harness") and not self.scene_allowed(url):
             return self.send_error(403, "Host key required")
         if url.path == "/ws":
             self.open_websocket(url)
@@ -477,6 +494,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json(hub.state(include_scene=parse_qs(url.query).get("scene") != ["0"]))
         elif url.path == "/api/links":
             self.send_json(self.links)
+        elif url.path == "/api/harness":
+            self.send_json(harness.status())
         elif url.path.startswith("/api/"):
             if not self.game_api.handle(self, "GET"):
                 self.send_error(404)
@@ -510,6 +529,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif url.path == "/api/reset":
             hub.load(MASTER)
             self.send_json({"ok": True, "edits": len(hub.ops)})
+        elif url.path == "/api/scene/requests":
+            self.scene_request(body)
         elif url.path == "/api/master":
             hub.save_master()
             self.send_json({"ok": True, "saved": str(MASTER.relative_to(ROOT)), "edits": len(hub.ops)})
@@ -533,21 +554,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_json(hub.edit({"kind": "patch", "id": patch_id, "code": code}, by="api", timeout=20))
 
     def chat(self, body):
+        """The chat box: a scene request through the harness, answered when it's done (same reply as before)."""
         try:
             request = json.loads(body)
-            # Imported lazily so the viewer still works without the anthropic package or an API key.
-            import scene_agent
-            result, status = scene_agent.handle_chat(request.get("message", ""), hub.chat_scene(request.get("scene", {}))), 200
-            if result["commands"]:
-                hub.append({"kind": "commands", "commands": result["commands"]}, by="chat")  # every page applies them
-        except ImportError:
-            result, status = {"error": "The anthropic package isn't installed (pip install anthropic)."}, 500
-        except Exception as err:  # surfaced in the chat box; the server keeps running
-            message = f"{type(err).__name__}: {err}"
-            if "authentication method" in str(err):
-                message = "No Claude API key found. Restart the server with ANTHROPIC_API_KEY set (see serve.py)."
-            result, status = {"error": message}, 500
-        self.send_json(result, status)
+        except ValueError:
+            return self.send_json({"error": "Send {message, scene}"}, 400)
+        job = harness.scene.submit(request.get("message", ""), tags=request.get("tags"), source="chat", scene_fallback=request.get("scene"))
+        harness.scene.wait(job, timeout=180)
+        result = job.result or {"error": f"still {job.status} after 180 s"}
+        if "error" in result and "authentication method" in result["error"]:
+            result = {"error": "No Claude API key found. Restart the server with ANTHROPIC_API_KEY set (see serve.py)."}
+        self.send_json(result, 200 if job.status == "done" else 500)
+
+    def scene_request(self, body):
+        """POST /api/scene/requests {text, tags, wait}: queue a scene edit; with wait, answer when it's done."""
+        try:
+            request = json.loads(body)
+            text = request["text"]
+        except (ValueError, KeyError, TypeError):
+            return self.send_json({"error": 'Send {"text": ..., "tags": [...], "wait": false}'}, 400)
+        job = harness.scene.submit(text, tags=request.get("tags"), source=str(request.get("source") or "api"))
+        if request.get("wait"):
+            harness.scene.wait(job, timeout=180)
+        self.send_json(job.public())
 
     def open_websocket(self, url):
         key = self.headers.get("Sec-WebSocket-Key")
@@ -670,7 +699,7 @@ def ensure_cert(ips):
 
 
 def main():
-    global hub
+    global hub, harness
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--https", action="store_true", help="also serve HTTPS with a self-signed cert (for the Quest over Wi-Fi)")
     parser.add_argument("--port", type=int, default=8000, help="HTTP port (default 8000)")
@@ -681,6 +710,9 @@ def main():
                         help="also listen on 127.0.0.1:PORT as the public door, for a tunnel to point at (e.g. 8080)")
     parser.add_argument("--public-url", default=os.environ.get("WORLDTINDER_PUBLIC_URL"),
                         help="the tunnel's public address, given to phones (e.g. https://mac.tailnet.ts.net:8443)")
+    parser.add_argument("--spell-target", choices=TARGET_MODES,
+                        help="what spells fly at: harness (the forge decides), mix (random), egg or user; "
+                             "default: targeting.mode in shared/catalog.json")
     args = parser.parse_args()
 
     # Phones join the game over the network; the scene routes check scene_allowed() themselves.
@@ -707,8 +739,13 @@ def main():
 
     hub = Hub()
     events = EventHub()
-    engine = GameEngine(Catalog.load(), events)
+    catalog = Catalog.load()
+    if args.spell_target:
+        catalog.targeting["mode"] = args.spell_target
+    harness = Harness(hub, catalog)  # the LLM forge for spells, the cast bridge, and the scene-edit queue
+    engine = GameEngine(catalog, events, llm_forge=harness.forge)
     engine.start()
+    harness.attach(engine)
     host_key = os.environ.get("WORLDTINDER_HOST_KEY") or secrets.token_urlsafe(8)
     Handler.game_api = GameAPI(engine, events, host_key, join_url)
     Handler.host_key = host_key
@@ -742,6 +779,8 @@ def main():
          if args.public_port else []):
         print(f"  {label + ':':<22}{value}")
     print(f"  {'Scene:':<22}{len(hub.ops)} edits from scenes/{hub.source}")
+    print(f"  {'Spell targets:':<22}{catalog.targeting['mode']}   (--spell-target harness | mix | egg | user)")
+    print(f"  {'Harness:':<22}{harness.backend} backend, {harness.pool.slots} slots   (status: curl -s localhost:{args.port}/api/harness)")
     if notes:
         print()
     for line in notes:
@@ -758,6 +797,7 @@ def main():
         pass
     finally:
         engine.stop()
+        harness.stop()
 
 
 if __name__ == "__main__":

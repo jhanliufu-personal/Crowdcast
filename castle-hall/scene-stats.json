@@ -1,0 +1,16 @@
+{
+  "castle-hall": {
+    "triangles": 277510,
+    "meshBatches": 108,
+    "materials": 15,
+    "textures": 8,
+    "glbBytes": 27347308
+  },
+  "precious-egg": {
+    "triangles": 26968,
+    "meshBatches": 3,
+    "materials": 3,
+    "textures": 1,
+    "glbBytes": 1931700
+  }
+}

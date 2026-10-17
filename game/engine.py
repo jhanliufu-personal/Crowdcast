@@ -24,6 +24,7 @@ import time
 from collections import Counter, deque
 from dataclasses import dataclass, field
 
+from .catalog import TARGETS
 from .forge import CatalogForge, ForgeJob, NotConnectedForge
 from .request_queue import RequestQueue
 from .spell_request import PENDING, Recipe, SpellRequest, Status, Tier, validate_spell
@@ -113,6 +114,8 @@ class GameEngine:
         self.round_started = None
         self.cracks = 0
         self.charge = 0
+        self.player_hp = float(self.catalog.player["max_hp"])  # the player in the headset
+        self._healed_at = None
         self.scores = {t["id"]: 0 for t in TEAMS}
         self.ready = deque()  # resolved spells waiting for room in the sky
         self.in_flight = {}   # id -> request, SENT to the headset or CAST into the scene
@@ -248,10 +251,14 @@ class GameEngine:
                     raise GameError(f"Spell {spell_id} isn't in flight.", 404)
                 self._set_status(request, status)
                 if status is Status.HIT:
-                    self.cracks += 1
                     self.scores[self.members[request.member_id].team] += HIT_POINTS
-                    if self.cracks >= MAX_CRACKS:
-                        self._end_round("broken")
+                    if request.spell.get("target") == "user":
+                        damage = self.catalog.player["damage_per_power"] * max(1, request.spell.get("power", 1))
+                        self.player_hp = max(0.0, self.player_hp - damage)
+                    else:
+                        self.cracks += 1
+                        if self.cracks >= MAX_CRACKS:
+                            self._end_round("broken")
                 elif status is Status.CAUGHT:
                     self.charge += request.spell["power"]
                     self.orbs.append(request)
@@ -343,10 +350,26 @@ class GameEngine:
 
     def _make_ready(self, request):
         member = self.members[request.member_id]
-        request.spell = {**request.spell, "id": request.id, "caster": member.to_public()}
+        request.spell = {**request.spell, "id": request.id, "caster": member.to_public(), "target": self._target(request.spell)}
         self._set_status(request, Status.READY)
         self.ready.append(request)
         self._release_ready()
+
+    def _target(self, spell):
+        """What a spell flies at, by the catalog's targeting mode (see Catalog.targeting)."""
+        mode = self.catalog.targeting["mode"]
+        if mode in TARGETS:
+            return mode
+        if mode == "harness" and spell.get("target") in TARGETS:
+            return spell["target"]  # the forge chose
+        return "egg" if random.random() < self.catalog.targeting["egg_share"] else "user"
+
+    def _heal(self, now):
+        """The player slowly gets health back during a round."""
+        if self._healed_at is not None:
+            hp_max = self.catalog.player["max_hp"]
+            self.player_hp = min(hp_max, self.player_hp + self.catalog.player["heal_per_s"] * (now - self._healed_at))
+        self._healed_at = now if self.phase in ACT_NAMES else None
 
     def _release_ready(self):
         """Cast ready spells while the current act has room for more in the sky."""
@@ -369,6 +392,7 @@ class GameEngine:
             for request, retrying in self.queue.expire_leases():
                 self._after_release(request, retrying, "The forge took too long.")
             now = self.clock()
+            self._heal(now)
             if self.phase in ACT_NAMES:
                 elapsed = now - self.round_started
                 if elapsed >= ROUND_SECONDS:
@@ -418,6 +442,8 @@ class GameEngine:
                 "remaining_s": round(ROUND_SECONDS - elapsed, 1),
                 "cracks": self.cracks,
                 "max_cracks": MAX_CRACKS,
+                "player": {"hp": round(self.player_hp, 1), "max_hp": self.catalog.player["max_hp"]},
+                "targeting": self.catalog.targeting["mode"],
                 "charge": self.charge,
                 "scores": self.scores,
                 "teams": TEAMS,

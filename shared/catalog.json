@@ -1,6 +1,9 @@
 {
   "default_motion": "straight",
   "channel_ms": 2500,
+  "preset_channel_ms": 500,
+  "targeting": { "mode": "harness", "egg_share": 0.5 },
+  "player": { "max_hp": 100, "damage_per_power": 10, "heal_per_s": 2 },
   "shapes": ["box", "sphere", "cylinder", "cone", "torus", "book"],
 
   "assets": [

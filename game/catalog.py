@@ -10,6 +10,8 @@ from pathlib import Path
 
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "shared" / "catalog.json"
 KINDS = ("spell", "asset", "motion")
+TARGETS = ("egg", "user")  # what a spell can fly at
+TARGET_MODES = ("harness", "mix", "egg", "user")
 
 
 class Catalog:
@@ -20,7 +22,15 @@ class Catalog:
         self.spells = {s["id"]: s for s in data["spells"]}
         self.default_motion = data["default_motion"]
         self.channel_ms = data["channel_ms"]
+        self.preset_channel_ms = data.get("preset_channel_ms", self.channel_ms)  # instant spells charge up faster
         self.shapes = data["shapes"]  # what the headset can render today (makeShape in index.html)
+        # Who spells fly at. mode: "harness" (the forge picks per spell; others are random by egg_share),
+        # "mix" (always random by egg_share), "egg" or "user" (every spell).
+        self.targeting = {"mode": "harness", "egg_share": 0.5, **data.get("targeting", {})}
+        if self.targeting["mode"] not in TARGET_MODES:
+            raise ValueError(f"targeting.mode must be one of {TARGET_MODES}")
+        # The player in the headset: a hit costs damage_per_power × the spell's power; heal_per_s restores it.
+        self.player = {"max_hp": 100, "damage_per_power": 10, "heal_per_s": 2, **data.get("player", {})}
         for s in self.spells.values():
             if s["asset"] not in self.assets or s["motion"] not in self.motions:
                 raise ValueError(f"catalog spell {s['id']!r} uses an unknown asset or motion")

@@ -9,6 +9,8 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
+# ...but not the vendored three.js build
+!vendor/three/build/
 develop-eggs/
 dist/
 downloads/
@@ -225,3 +227,6 @@ __marimo__/
 # Live scene cache written by serve.py (the frozen master is scenes/master.json)
 scenes/live.json
 scenes/live.tmp
+
+# Library items written by the harness (reviewed by hand before anything is committed)
+assets/generated/
