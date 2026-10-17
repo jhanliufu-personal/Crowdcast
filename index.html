@@ -624,6 +624,9 @@
     //                            skip side effects there (like adding objects or sending edits)
     //   ctx.scene, ctx.camera (what this page renders from), ctx.rig (what locomotion moves), ctx.controllers,
     //   ctx.renderer, ctx.world() (the room model), ctx.addObject / updateObject / removeObject (the chat box's objects)
+    //   ctx.makeShape(shape, material) one of the chat box's shapes, 1 m across
+    //   ctx.report(message)      the headset sends a game message to the server ({type, ...}; the harness's spell
+    //                            runtime reports spell outcomes this way); does nothing on viewers
     // Returning a function from the code also registers it as cleanup.
     const patches = new Map(); // id -> { root, frame: [fn], cleanup: [fn] }
     const AsyncFunction = (async () => {}).constructor;
@@ -647,7 +650,8 @@
         },
         load: (url) => gltfLoader.loadAsync(url),
         import: (path) => import(`three/addons/${path}`),
-        addObject, updateObject, removeObject,
+        addObject, updateObject, removeObject, makeShape,
+        report: (message) => { if (ROLE === 'headset') send({ ...message, type: 'game', event: message.type }); },
       };
       try {
         const cleanup = await new AsyncFunction('ctx', 'THREE', code)(ctx, THREE);
