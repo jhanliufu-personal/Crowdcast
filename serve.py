@@ -94,6 +94,7 @@ import socket
 import ssl
 import struct
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -462,9 +463,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ".js": "text/javascript",
     }
 
+    verbose = False  # --verbose: log every request; otherwise only refused and failed ones
+
     def log_message(self, format, *args):
         # EventSource and the WebSocket put the audience token or host key in the URL; keep them out of the log.
         super().log_message(format, *(re.sub(r"\b(token|key)=[^&\s\"]+", r"\1=…", a) if isinstance(a, str) else a for a in args))
+
+    def log_request(self, code="-", size="-"):
+        # Pages poll and load dozens of files, so successful requests stay quiet. Refusals and failures still show.
+        status = int(code) if str(code).isdigit() or isinstance(code, int) else 0
+        if self.verbose or status >= 500 or (status >= 400 and urlparse(self.path).path != "/favicon.ico"):
+            super().log_request(code, size)
+
+    def log_error(self, format, *args):
+        # send_error() logs the reason, then the request line (above); the reason alone is noise unless --verbose.
+        if self.verbose:
+            super().log_error(format, *args)
 
     def end_headers(self):
         # Browsers may keep files, but must check they're unchanged before using them (a cheap 304 Not Modified,
@@ -609,6 +623,16 @@ class PublicHandler(Handler):
     trust_local = False
 
 
+class QuietServer(http.server.ThreadingHTTPServer):
+    """Doesn't print a traceback when a client simply goes away: tabs closing, Wi-Fi dropping, a browser refusing the
+    self-signed certificate, or a page talking HTTP to the HTTPS port. Real errors still print."""
+
+    def handle_error(self, request, client_address):
+        if not Handler.verbose and isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError, ssl.SSLError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def lan_ip():
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         try:
@@ -703,6 +727,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--https", action="store_true", help="also serve HTTPS with a self-signed cert (for the Quest over Wi-Fi)")
     parser.add_argument("--port", type=int, default=8000, help="HTTP port (default 8000)")
+    parser.add_argument("--verbose", action="store_true", help="log every request, and dropped connections")
     parser.add_argument("--https-port", type=int, default=8443, help="HTTPS port (default 8443)")
     parser.add_argument("--join-host", default=os.environ.get("WORLDTINDER_JOIN_HOST"),
                         help="address phones should use, if the detected one is wrong (e.g. several network interfaces)")
@@ -714,6 +739,7 @@ def main():
                         help="what spells fly at: harness (the forge decides), mix (random), egg or user; "
                              "default: targeting.mode in shared/catalog.json")
     args = parser.parse_args()
+    Handler.verbose = args.verbose
 
     # Phones join the game over the network; the scene routes check scene_allowed() themselves.
     listeners = [("0.0.0.0", args.port, Handler)]
@@ -724,7 +750,7 @@ def main():
     servers = []
     for address, port, handler in listeners:  # bind first, so a busy port fails before anything slow happens
         try:
-            servers.append(http.server.ThreadingHTTPServer((address, port), functools.partial(handler, directory=str(ROOT))))
+            servers.append(QuietServer((address, port), functools.partial(handler, directory=str(ROOT))))
         except OSError as err:
             raise SystemExit(f"Can't listen on port {port}: {err.strerror}. Is another serve.py still running? "
                              f"Stop it, or pick other ports with --port / --https-port / --public-port.")
