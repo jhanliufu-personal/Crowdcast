@@ -341,7 +341,10 @@ function update(state, dt, t) {
   state.body.position.copy(spell.position).add(spell.offset);
   state.body.scale.setScalar(state.size * spell.scale * charge);
   if (age < 0) state.body.rotation.y += dt * 2;
-  if (state.frameCount === 1) state.body.visible = true;
+  if (state.frameCount === 1) {
+    state.body.visible = true;
+    ctx.sound?.('whoosh', state.body.position); // headset only; silent on viewers
+  }
   spell.position.copy(state.body.position);
 
   if (ctx.isViewer || age < 0) return;
@@ -370,6 +373,10 @@ function finish(state, outcome) {
   state.done = true;
   state.holder.visible = false;
   report({ type: 'outcome', spell_id: state.id, outcome });
+  // Sliced: it shatters. Reached its target: a crack on the egg, or a thud on you. Flew past: a swish.
+  if (outcome === 'catch') ctx.sound?.('shatter', state.body.position);
+  else if (outcome === 'hit') ctx.sound?.(state.egg ? 'crack' : 'thud', state.egg ? state.body.position : undefined);
+  else ctx.sound?.('swish', state.body.position);
 }
 
 // A burst of small pieces in the spell's color where it was sliced.

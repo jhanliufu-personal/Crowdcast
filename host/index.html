@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#14122b" />
-  <title>Midnight Egg Host</title>
+  <title>Midnight Egg · Host</title>
   <style>
     :root {
       --bg: #14122b; --panel: #1f1c3d; --panel-2: #2a2650; --line: #3b3670;
@@ -42,6 +42,7 @@
     #egg i.cracked { background: var(--danger); }
     #scores { display: flex; gap: 6px; flex-wrap: wrap; }
     #scores span { font-size: 13px; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); border-left: 4px solid; }
+    #scores .trophy { background: none; border: 0; padding: 0; }
     #controls { margin-left: auto; display: flex; gap: 8px; align-items: center; }
     #controls-msg { color: var(--danger); font-size: 13px; }
     #forge { font-size: 13px; }
@@ -51,6 +52,10 @@
     .grid { display: grid; gap: 14px; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); align-items: start; }
     @media (max-width: 820px) { .grid { grid-template-columns: minmax(0, 1fr); } }
     .stack { display: grid; gap: 14px; }
+    /* Queue (with Ready under it) and In the sky side by side; long lists scroll inside their card. */
+    .flow { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+    @media (max-width: 520px) { .flow { grid-template-columns: minmax(0, 1fr); } }
+    .flow .track, .flow .rows { max-height: 46vh; overflow-y: auto; }
 
     /* ---- The cauldron line: one orb per queued request ---------------------------------- */
     .track { position: relative; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px 12px; min-height: 122px; padding: 14px 6px 6px; border-radius: 10px;
@@ -67,7 +72,7 @@
     .token .orb {
       --rim: var(--preset);
       position: relative; width: 62px; height: 62px; border-radius: 50%; display: grid; place-items: center;
-      background: radial-gradient(circle at 34% 28%, color-mix(in srgb, var(--team) 35%, white) 0%, var(--team) 48%, color-mix(in srgb, var(--team) 45%, black) 100%);
+      background: radial-gradient(circle at 34% 28%, color-mix(in srgb, var(--caster) 35%, white) 0%, var(--caster) 48%, color-mix(in srgb, var(--caster) 45%, black) 100%);
       box-shadow: 0 0 0 3px var(--rim), 0 8px 18px rgba(0, 0, 0, 0.5), 0 0 22px color-mix(in srgb, var(--rim) 45%, transparent);
     }
     .token.remix .orb { --rim: var(--remix); }
@@ -111,7 +116,6 @@
     .req { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 2px 10px; align-items: center; background: var(--panel-2); border-radius: 10px; padding: 8px 10px; border-left: 4px solid var(--line); }
     .req .pos { grid-row: 1 / span 2; text-align: center; font-size: 22px; }
     .req .who { font-weight: 600; font-size: 14px; }
-    .req .who .team { font-weight: 400; color: var(--muted); }
     .req .what { grid-column: 2; font-size: 14px; overflow-wrap: anywhere; }
     .req .side { grid-row: 1 / span 2; grid-column: 3; text-align: right; font-size: 12px; color: var(--muted); white-space: nowrap; }
     .tier { font-size: 12px; font-weight: 700; }
@@ -126,7 +130,7 @@
     td.name { white-space: nowrap; }
     .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #55507f; margin-right: 6px; }
     .dot.on { background: var(--ok); }
-    .teamtag { display: inline-block; padding: 0 8px; border-radius: 999px; font-size: 12px; color: #fff; }
+    td.name { border-left: 4px solid transparent; }
     .status { font-size: 12px; color: var(--muted); }
 
     /* ---- Player's view ------------------------------------------------------------------- */
@@ -139,7 +143,7 @@
 </head>
 <body>
   <form id="key-form" class="hidden">
-    <h1>Host</h1>
+    <h1>🥚 Midnight Egg · Host</h1>
     <p class="muted">Enter the host key printed by <code>serve.py</code> (or set with WORLDTINDER_HOST_KEY).</p>
     <input id="key-input" placeholder="Host key" autocomplete="off" required />
     <button class="primary">Open host view</button>
@@ -148,7 +152,7 @@
 
   <main id="main" class="hidden">
     <header>
-      <h1>🥚 Host</h1>
+      <h1>🥚 Midnight Egg · Host</h1>
       <span id="conn">connecting</span>
       <span id="phase"></span>
       <span id="clock"></span>
@@ -163,7 +167,8 @@
     </header>
 
     <div class="grid">
-      <div class="stack">
+      <div class="flow">
+       <div class="stack">
         <section class="card">
           <h2>Queue <span class="count" id="queue-count"></span> <span class="note muted" id="forge"></span></h2>
           <div class="track" id="queue-track">
@@ -173,7 +178,7 @@
             <span><b style="color:var(--preset)">⚡</b> instant</span>
             <span><b style="color:var(--remix)">✨</b> remix</span>
             <span><b style="color:var(--novel)">🌀</b> brand new</span>
-            <span>orb color = caster’s team</span>
+            <span>orb color = caster</span>
             <span>ring = being brewed, time left</span>
           </div>
         </section>
@@ -181,6 +186,7 @@
           <h2>Ready <span class="count" id="ready-count"></span></h2>
           <ul class="rows" id="ready"></ul>
         </section>
+       </div>
         <section class="card">
           <h2>In the sky <span class="count" id="in_flight-count"></span></h2>
           <ul class="rows" id="in_flight"></ul>
@@ -190,7 +196,7 @@
       <section class="card">
         <h2>Audience <span class="count" id="roster-count"></span></h2>
         <table>
-          <thead><tr><th>Name</th><th>Team</th><th class="num">Casts</th><th class="num">Hits</th><th>Latest spell</th></tr></thead>
+          <thead><tr><th>Name</th><th class="num">Score</th><th class="num">Casts</th><th class="num">Hits</th><th>Latest spell</th></tr></thead>
           <tbody id="roster"></tbody>
         </table>
       </section>
@@ -321,11 +327,11 @@
       $('#clock').textContent = state.phase === 'lobby' || state.phase === 'over' ? (state.outcome ? `egg ${state.outcome}` : '') : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} to midnight`;
       $('#egg').replaceChildren(
         ...Array.from({ length: state.max_cracks }, (_, i) => el('i', { className: i < state.cracks ? 'cracked' : '' })),
-        el('span', { className: 'muted', textContent: ` charge ${state.charge}` }),
       );
-      $('#scores').replaceChildren(...state.teams.map((t) => {
-        const span = el('span', { textContent: `${t.name} ${state.scores[t.id]}` });
-        span.style.borderLeftColor = t.color;
+      const top = state.leaderboard.slice(0, 3).filter((m) => m.score);
+      $('#scores').replaceChildren(...(top.length ? [el('span', { className: 'trophy', textContent: '🏆' })] : []), ...top.map((m) => {
+        const span = el('span', { textContent: `${m.name} ${m.score}` });
+        span.style.borderLeftColor = m.color;
         return span;
       }));
       $('#forge').textContent = state.forge_online ? '' : 'LLM forge offline: remix and brand-new spells wait in line';
@@ -344,14 +350,12 @@
       }
       $('#roster-count').textContent = `${view.roster.length} joined · ${view.roster.filter((m) => m.online).length} online`;
       $('#roster').replaceChildren(...(view.roster.length ? view.roster.map((m) => {
-        const tag = el('span', { className: 'teamtag', textContent: m.team });
-        tag.style.background = m.color;
         const latest = m.latest
           ? el('span', {}, describe(m.latest.parts), el('div', { className: 'status', textContent: `${TIERS[m.latest.tier]} · ${m.latest.status}` }))
           : el('span', { className: 'muted', textContent: '—' });
         return el('tr', {},
-          el('td', { className: 'name', title: m.online ? 'connected' : 'not connected' }, el('span', { className: `dot${m.online ? ' on' : ''}` }), m.name),
-          el('td', {}, tag),
+          el('td', { className: 'name', title: m.online ? 'connected' : 'not connected', style: `border-left-color: ${m.color}` }, el('span', { className: `dot${m.online ? ' on' : ''}` }), m.name),
+          el('td', { className: 'num', textContent: m.score }),
           el('td', { className: 'num', textContent: m.casts }),
           el('td', { className: 'num', textContent: m.hits }),
           el('td', {}, latest),
@@ -364,7 +368,7 @@
       const stage = r.status === 'sent' ? 'sent, awaiting headset' : r.status === 'cast' ? 'in the scene' : null;
       const li = el('li', { className: 'req' },
         el('span', { className: 'pos', textContent: requestEmoji(r) }),
-        el('span', { className: 'who' }, r.caster.name, el('span', { className: 'team', textContent: ` · ${r.caster.team}` })),
+        el('span', { className: 'who', textContent: r.caster.name }),
         el('span', { className: 'side' },
           el('div', { className: `tier ${r.tier}`, textContent: TIERS[r.tier] }),
           el('div', { className: 'age', textContent: ago(r.created_at), dataset: { created: r.created_at } }),
@@ -399,7 +403,7 @@
       node.classList.add(r.tier);
       node.classList.toggle('next', index === 0);
       node.classList.toggle('forging', !!r.lease);
-      node.querySelector('.orb').style.setProperty('--team', r.caster.color);
+      node.querySelector('.orb').style.setProperty('--caster', r.caster.color);
       node.querySelector('.emoji').textContent = requestEmoji(r);
       node.querySelector('.badge').textContent = TIER_BADGE[r.tier];
       node.querySelector('.motion').textContent = motionEmoji(r) ?? '';
@@ -413,7 +417,7 @@
         delete node.dataset.deadline;
       }
       const plain = r.parts.map(label).join(' ');
-      node.title = `${r.caster.name} (${r.caster.team}) · ${TIERS[r.tier]}${r.lease ? ` · brewing, try ${r.lease.attempt}` : ''}\n${plain}`;
+      node.title = `${r.caster.name} · ${TIERS[r.tier]}${r.lease ? ` · brewing, try ${r.lease.attempt}` : ''}\n${plain}`;
     }
 
     function renderQueue(queue) {
@@ -643,14 +647,13 @@
         const u = unit(), e = eggPos();
         const shake = now - eggShake < 0.6 ? Math.sin(now * 70) * 7 * u * (1 - (now - eggShake) / 0.6) : 0;
         const rx = 46 * u, ry = 60 * u, x = e.x + shake, y = e.y;
-        const charge = state?.charge ?? 0;
         // Cradle
         ctx.strokeStyle = '#d8a743'; ctx.lineWidth = 9 * u; ctx.lineCap = 'round';
         ctx.beginPath(); ctx.arc(x, y + 18 * u, rx * 1.25, Math.PI * 0.15, Math.PI * 0.85); ctx.stroke();
         ctx.fillStyle = '#8a6526'; ctx.fillRect(x - 7 * u, y + 18 * u + rx * 1.15, 14 * u, H);
-        // Egg with charge glow
+        // Egg with a soft glow
         ctx.save();
-        ctx.shadowColor = '#ffd76a'; ctx.shadowBlur = Math.min(70, 12 + charge * 5) * u;
+        ctx.shadowColor = '#ffd76a'; ctx.shadowBlur = 12 * u;
         const g = ctx.createRadialGradient(x - rx * 0.35, y - ry * 0.4, rx * 0.1, x, y, ry * 1.1);
         g.addColorStop(0, '#fffdf4'); g.addColorStop(0.6, '#f0e2c0'); g.addColorStop(1, '#c9b48a');
         ctx.fillStyle = g;
@@ -720,7 +723,7 @@
           ctx.fillStyle = 'rgba(5, 4, 26, 0.55)'; ctx.fillRect(0, H * 0.4, W, 54 * u);
           text(msg, W / 2, H * 0.4 + 27 * u, 24 * u, '#fff', 800);
         }
-        text(`🥚 ${state.cracks}/${state.max_cracks} cracks · ✨ charge ${state.charge}`, 16 * u, H - 18 * u, 14 * u, 'rgba(236, 235, 255, 0.85)', 600, 'left');
+        text(`🥚 ${state.cracks}/${state.max_cracks} cracks`, 16 * u, H - 18 * u, 14 * u, 'rgba(236, 235, 255, 0.85)', 600, 'left');
       }
 
       function drawSpells(now) {

@@ -1,6 +1,6 @@
 ---
 handles: scene
-model: claude-sonnet-5-5
+model: claude-opus-5-5
 effort: low
 max_tokens: 4000
 output: edit_scene

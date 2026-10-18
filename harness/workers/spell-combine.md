@@ -1,6 +1,6 @@
 ---
 handles: spell/combine
-model: claude-haiku-5-5
+model: claude-opus-5-5
 effort: low
 max_tokens: 2000
 output: forge_spell

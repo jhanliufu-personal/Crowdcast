@@ -4,7 +4,7 @@
 
 You are a young wizard on top of a castle tower, guarding a magical egg until midnight. The crowd around you, playing from their phones, types spells in plain language. An LLM turns each idea into living code inside the scene. You shield, catch, and throw those spells back by **shouting their names and flicking your wand**. If the egg survives until midnight, it hatches into a creature built from the spells you caught, so every round produces a different one.
 
-> **Theme note:** the game is in the style of a classic wizarding-school fantasy (castle at night, wands, broomsticks, magical creatures), but every name, team, spell word, and character is original. This keeps the demo safe to show, record, and publish.
+> **Theme note:** the game is in the style of a classic wizarding-school fantasy (castle at night, wands, broomsticks, magical creatures), but every name, spell word, and character is original. This keeps the demo safe to show, record, and publish.
 
 > **Status:** most of this document is the **design target**. What exists in the repo (WorldTinder) today is a working prototype of the core loop: *text in → LLM → edits to a live WebXR scene graph*. See [Current prototype](#current-prototype) for what is built and how to run it; sections below call out where the prototype differs from the plan.
 
@@ -44,10 +44,10 @@ No build step and no dependencies beyond the standard library (plus `anthropic` 
 | `harness/` | **The harness:** Claude workers that make the game's remix and novel spells (the LLM forge) and the chat box's scene edits, several at once, with a speed-first, reuse-first policy written in Markdown files. Each cast spell becomes a three.js patch. See [`harness/README.md`](harness/README.md). |
 | `assets/` | The library the harness builds on: prebuilt objects, behaviors and models (`assets/index.json`), plus what models built (`assets/generated/`, not committed). |
 | `scene_agent.py` | The chat box's earlier, single-call Claude client. `serve.py` no longer uses it: its prompt and tools are now in `harness/workers/scene-editor.md` and `harness/tools/scene-commands.md`. |
-| `game/` | The game server: audience members and teams, structured spell requests, the priority request queue, the round (acts, clock, cracks, charge, scores), and the HTTP + Server-Sent Events API. Mounted by `serve.py`. |
+| `game/` | The game server: audience members (each playing alone, with their own color and score), structured spell requests, the priority request queue, the round (acts, clock, cracks, charge, scores), and the HTTP + Server-Sent Events API. Mounted by `serve.py`. |
 | `audience/index.html` | The audience web app for phones, served at `/audience/`. |
 | `join/index.html` | The join screen for the projector, at `/join/`: a QR code of the phones' address and a live count of who has joined. |
-| `host/index.html` | The host console at `/host/`: the queue as a "cauldron line" of orbs (one per request: its emoji, the caster's team color, a tier badge, and a countdown ring while a forge brews it), what is ready and in the sky, the roster of everyone who joined (and who is connected), Start / Reset round, and a **player's view** (see below). |
+| `host/index.html` | The host console at `/host/`: the queue as a "cauldron line" of orbs (one per request: its emoji, the caster's color, a tier badge, and a countdown ring while a forge brews it), what is ready and in the sky, the roster of everyone who joined (score, casts, hits, and who is connected), the top three scorers, Start / Reset round, and a **player's view** (see below). |
 | `shared/catalog.json` | The ready-made building blocks: assets, motions, and preset spells. |
 
 **What works today**
@@ -60,7 +60,7 @@ No build step and no dependencies beyond the standard library (plus `anthropic` 
 - `?emulate` loads Meta's IWER emulated Quest 3 (with on-screen DevUI controls) so "Enter VR" works on a laptop with no headset.
 - From the browser console, `sceneState()` shows exactly what is sent to the LLM and `applyCommands([...])` applies edits without calling it.
 - **Spells from the audience:** the harness makes remix and novel spells with Claude (reusing the library first: an exact match needs no call at all), the engine casts them, and the cast bridge sends each one to the headset as a patch that flies it at the player. Slice it with a controller blade (or a fast mouse flick on a `?headset` tab) to catch it. See [`harness/README.md`](harness/README.md).
-- **Game server skeleton:** audience members join from any number of phones, get sorted into teams, and compose spells from building blocks and free text. Requests are queued by tier (see [Spell requests and the queue](#spell-requests-and-the-queue)); ready-made ones are resolved from the catalog and cast immediately, paced by the act. The server runs the 3-minute round and scores hit / catch / shield / return reports from the headset.
+- **Game server skeleton:** audience members join from any number of phones, each playing alone with their own color and score, and compose spells from building blocks and free text. Requests are queued by tier (see [Spell requests and the queue](#spell-requests-and-the-queue)); ready-made ones are resolved from the catalog and cast immediately, paced by the act. The server runs the 3-minute round and scores hit / catch / shield / return reports from the headset.
 
 **Not built yet:** the castle tower, egg (spells aim at the player's head for now, and a spell that flies past counts as "shield"), wand/shield input, return by incantation, spectator view, midnight merge, hatched creature, and ElevenLabs audio.
 
@@ -97,7 +97,7 @@ to permit it. HTTPS alone cannot fix a blocked network path.
 | Setting | Default | Meaning |
 |---|---|---|
 | `WORLDTINDER_BACKEND` (environment) or `backend` in `harness/orchestrator.md` | `claude-cli` | `claude-cli` runs the Claude Code CLI headless (`claude -p`) on your subscription, with all of its tools and MCP servers disabled and any API key removed from its environment; each call starts a process. `api` calls the Claude API with structured outputs (needs `ANTHROPIC_API_KEY`). |
-| `model`, `effort`, `max_tokens` in `harness/workers/*.md` | Haiku 5.5 for adapt and combine, Sonnet 5.5 for new spells and scene edits, effort `low` | Per worker. |
+| `model`, `effort`, `max_tokens` in `harness/workers/*.md` | Opus 5.5 for every worker, effort `low` (needs Claude Code 2.1.280 or newer for the `claude-cli` backend; `claude update`) | Per worker. |
 | `slots`, `scene_max_slots` in `harness/orchestrator.md` | 4, 1 | How many Claude calls run at once, and how many of them scene edits may use. |
 
 Model-written spell code is checked with acorn (vendored in `vendor/acorn/`), so new code needs Node.js; without it, new spells fly as plain shapes.
@@ -111,11 +111,11 @@ Model-written spell code is checked with acorn (vendored in `vendor/acorn/`), so
 | Element | What it is |
 |---|---|
 | **Player** | One person in a Quest headset, standing in place, with a wand (right controller or hand) and a shield hand (left). |
-| **Audience** | Anyone nearby with a phone. They join a web app by QR code, get sorted into a team, and send spells as free text. |
+| **Audience** | Anyone nearby with a phone. They join a web app by QR code, each playing for themselves, and send spells as free text. |
 | **LLM** | The game's "spell forge." It turns audience text into code that runs in the scene, merges spells for the finale, and designs the hatched creature. |
 | **Scene graph** | The single source of truth for everything in the world. All rendering, gameplay, and LLM edits go through it. |
 | **ElevenLabs** | Voices for spell incantations, the narrator, and the creature; generated sound effects; speech-to-text for the player's spell words. |
-| **Spectator screen** | A laptop or projector showing a third-person view of the tower, the spell feed, the clock, and team scores. |
+| **Spectator screen** | A laptop or projector showing a third-person view of the tower, the spell feed, the clock, and the top scorers. |
 
 **Why VR:** spells come from **all 360°**, including behind you, at different depths. You hear each caster chant from their direction before the spell fires, so you turn, track, and react with your whole body. This doesn't work on a flat screen.
 
@@ -137,7 +137,7 @@ Model-written spell code is checked with acorn (vendored in `vendor/acorn/`), so
 |---|---|---|---|
 | **Shield** | Shout the shield word (**"Aegis!"**) and raise your left hand | A glowing barrier appears in front of the shield hand and blocks spells | Safe, but earns no charge |
 | **Catch** | Flick the wand at a spell in flight | The spell shrinks into a glowing orb that orbits the player and charges the egg | Needs aim and timing; a miss means the egg gets hit |
-| **Return** | Shout a caught spell's incantation and flick toward an audience avatar | Fires that spell back at the caster's broomstick | Uses up the orb's charge; the caster's team loses points and their phone buzzes |
+| **Return** | Shout a caught spell's incantation and flick toward an audience avatar | Fires that spell back at the caster's broomstick | Uses up the orb's charge; the caster loses points and their phone buzzes |
 
 The central decision is **shield safely vs. catch for progress**. It's easy to understand and hard to master.
 
@@ -163,19 +163,11 @@ If the player catches it, *"Kettlenox!"* becomes a word they can shout to send i
 
 At midnight, the LLM receives the list of spells the player caught and designs a creature from them. For example, fire + paper birds + kettle could produce a **flame-winged teapot dragon**. The creature is assembled from a parts library (body, head, wings, tail, accessories, colors, particles), receives a name and a voice line from the narrator, and circles the tower. The spectator screen shows it with the credits: *"Hatched from spells by Maya, Theo and Priya."*
 
-### Teams and scoring
+### Scoring
 
-- On joining, the audience is sorted by an **enchanted mirror** into one of four original teams:
-
-  | Team | Color |
-  |---|---|
-  | Ember | Crimson |
-  | Tide | Blue |
-  | Thorn | Green |
-  | Gale | Gold |
-
-- **Team points:** +10 when your spell cracks the egg; −5 when the player returns a spell at one of your team's casters.
-- **Awards at the end:** winning team, plus a **"Most Magical Spell"** chosen by the narrator (LLM), which rewards creativity over spamming fireballs.
+- There are no teams: everyone in the audience plays for themselves. On joining, each person gets their own color (their broomstick, their spell orbs on the host screen).
+- **Points:** +10 when your spell cracks the egg; −5 when the player returns a spell at you.
+- **Awards at the end:** the top scorer, plus a **"Most Magical Spell"** chosen by the narrator (LLM), which rewards creativity over spamming fireballs.
 - Caught spells become part of the creature, which gives the audience another reason to be creative.
 
 ---
@@ -187,15 +179,15 @@ A mobile-first page served by the game server. No install, no account.
 **Flow**
 
 1. **Join:** scan the QR code on the spectator screen, enter a display name.
-2. **Sorting:** a short animation where the enchanted mirror reveals the team. The player's broomstick avatar appears around the tower in team colors.
+2. **Welcome:** a short animation where the enchanted mirror reveals your name in your own color. Your broomstick avatar appears around the tower in that color.
 3. **Cast:** a text box (max ~120 characters) with example chips ("a swarm of paper birds", "lightning that zigzags", "a cursed teapot") and a **Cast** button.
 4. **Brewing → Channeling → Result:** live status for their spell.
    - *Brewing* – the LLM is forging it (the phone shows a cauldron animation).
    - *Channeling* – their avatar is chanting in the scene.
    - *Result* – **Hit!**, **Caught!**, or **Shielded**, with the spell's name and incantation.
 5. **Cooldown:** a ring timer (default **5 s** per person) to keep things fair and limit LLM usage.
-6. **Getting hit:** if the player returns a spell at you, your phone buzzes (Vibration API where supported) and the screen flashes your team color.
-7. **End screen:** the hatched creature, team results, and the Most Magical Spell award.
+6. **Getting hit:** if the player returns a spell at you, your phone buzzes (Vibration API where supported) and the screen flashes your color.
+7. **End screen:** the hatched creature, the top scorers, and the Most Magical Spell award.
 
 **Stretch:** a vote to summon a creature boss during the Storm act, and a "helper" spell each audience member can use once to heal a crack.
 
@@ -255,10 +247,10 @@ The LLM side plugs in at `game/forge.py`; see [the forge contract](#acknowledgem
 **Authority split**
 
 - The **headset** is the authority for the simulation: movement, collisions, catches, hits. This keeps gameplay responsive for the player.
-- The **server** is the authority for the session: players, teams, scores, the spell queue, and all generated code and audio.
+- The **server** is the authority for the session: players, scores, the spell queue, and all generated code and audio.
 - The **spectator view** runs the same scene code and mirrors the headset's scene graph through periodic snapshots and events.
 
-**Today:** the game server (`game/`, inside `serve.py`) owns the session as described above: members, teams, the request queue, the round, and scores. Phones use the audience app; the headset side of the game isn't connected yet. The game server and the scene editor are still separate. `index.html` is the scene and a text input at once. It sends `{ message, scene }` to `POST /api/chat`; the server calls Claude, adds the returned commands to its **edit log**, and sends them to every open page over the WebSocket, which applies them to its own scene graph. The server keeps the edit log (commands and patches, in order), not the scene itself: each page builds its scene graph by applying the log, and the player page answers the server's requests for a live snapshot.
+**Today:** the game server (`game/`, inside `serve.py`) owns the session as described above: members, the request queue, the round, and scores. Phones use the audience app; the headset side of the game isn't connected yet. The game server and the scene editor are still separate. `index.html` is the scene and a text input at once. It sends `{ message, scene }` to `POST /api/chat`; the server calls Claude, adds the returned commands to its **edit log**, and sends them to every open page over the WebSocket, which applies them to its own scene graph. The server keeps the edit log (commands and patches, in order), not the scene itself: each page builds its scene graph by applying the log, and the player page answers the server's requests for a live snapshot.
 
 ```
 index.html ── POST /api/chat { message, scene } ──▶ serve.py ──▶ scene_agent.py ──▶ Claude (API or claude CLI)
@@ -291,7 +283,7 @@ A tree of nodes. Each node is serializable, so it can be sent to the spectator v
   "material": { "color": "#ff7a2f", "glow": 0.8 },
   "tags": ["spell", "catchable"],
   "behavior": "shrieking-kettle",
-  "meta": { "caster": "maya", "team": "ember" }
+  "meta": { "caster": "maya", "color": "#e23636" }
 }
 ```
 
@@ -391,7 +383,7 @@ In the full game the LLM **writes and edits scene code** that is validated and t
 
 #### 1. Forge a spell (audience → spell module)
 
-- **Input:** the audience text, the caster's team color, the runtime API reference, the prefab list (with tags such as `canFly`, `animal`, `object`, `elemental`), and difficulty settings for the current act.
+- **Input:** the audience text, the caster's color, the runtime API reference, the prefab list (with tags such as `canFly`, `animal`, `object`, `elemental`), and difficulty settings for the current act.
 - **Output:** a spell module (as above) plus metadata:
   ```json
   {
@@ -623,7 +615,7 @@ Game requests:
 |---|---|---|
 | `GET /api/catalog` | — | → `shared/catalog.json` |
 | `GET /api/join-info` | — | → `{ audience_url }`, the address phones should open (the join screen turns it into a QR code) |
-| `GET /api/game/state` | — | → game state: `phase`, `remaining_s`, `cracks`, `charge`, `scores`, `teams`, `queue` counts per tier, `ready`, `in_flight` spells, `orbs`, `forge_online` |
+| `GET /api/game/state` | — | → game state: `phase`, `remaining_s`, `cracks`, `charge`, `scores` (member id → score), `leaderboard` (top 5: `id`, `name`, `color`, `score`), `queue` counts per tier, `ready`, `in_flight` spells, `orbs`, `forge_online` |
 | `POST /api/join` | — | `{ name }` → `{ token, member, requests, cooldown_s }` |
 | `GET /api/me` | `X-Token` | → `{ member, requests, cooldown_s }` |
 | `POST /api/spells` | `X-Token` | `{ parts }` → `{ request, member, requests, cooldown_s }`; 429 with `retry_after` while cooling down |
@@ -639,8 +631,8 @@ Game requests:
 | `spell:status` | the caster | `{ id, tier, status, parts, ahead?, spell?: { name, incantation }, error? }` |
 | `spell:cast` | headset, spectator | full spell: `id`, `name`, `incantation`, `power`, `channel_ms`, `asset`, `motion`, `caster`. Sent again on headset connect until confirmed with `spawned`. |
 | `audience:buzz` | the member a spell was returned at | `{ spell, incantation, penalty }` |
-| `game:over` | all | `{ outcome: "hatched" \| "broken", charge, caught, scores, winners }` |
-| `host:view` | host, on connect and whenever it changes | `roster` (name, team, online, casts, hits, latest request) and the requests in `queue` (serving order, with `ahead`; claimed ones have `status: "forging"` and `lease: { attempt, seconds_left, seconds }`), `ready` and `in_flight` (`sent` or `cast`; both with the full `spell`), each with its `caster`; `recent`: `{ id, status }` of the last 20 spells to leave the sky |
+| `game:over` | all | `{ outcome: "hatched" \| "broken", charge, caught, scores, winners }` (`winners`: member ids with the top score) |
+| `host:view` | host, on connect and whenever it changes | `roster` (name, color, online, score, casts, hits, latest request) and the requests in `queue` (serving order, with `ahead`; claimed ones have `status: "forging"` and `lease: { attempt, seconds_left, seconds }`), `ready` and `in_flight` (`sent` or `cast`; both with the full `spell`), each with its `caster`; `recent`: `{ id, status }` of the last 20 spells to leave the sky |
 
 All other paths are static files, served with `Cache-Control: no-store` so edits show up on reload.
 
@@ -649,7 +641,7 @@ All other paths are static files, served with `Cache-Control: no-store` so edits
 | Event | Direction | Payload |
 |---|---|---|
 | `audience:join` | audience → server | `{ name }` |
-| `audience:sorted` | server → audience | `{ id, team, color }` |
+| `audience:welcome` | server → audience | `{ id, color }` |
 | `spell:submit` | audience → server | `{ text }` |
 | `spell:status` | server → audience | `{ spellId, status: "brewing" \| "channeling" \| "hit" \| "caught" \| "shielded" \| "fizzled" }` |
 | `spell:ready` | server → headset, spectator | `{ spellId, casterId, code, meta, audio: { chant, sfx } }` |
@@ -680,7 +672,7 @@ WorldTinder/
 │   ├── catalog.py         # loads shared/catalog.json
 │   ├── spell_request.py   # structured requests, tiers, preset resolution
 │   ├── request_queue.py   # priority queue (tier, then arrival) with claim / ack / nack and leases
-│   ├── engine.py          # members, teams, round, pacing, scoring
+│   ├── engine.py          # members, round, pacing, scoring
 │   ├── forge.py           # forge interface for the LLM harness; CatalogForge for presets
 │   ├── events.py          # fan-out to SSE subscribers
 │   └── http_api.py        # /api/ routes
@@ -702,7 +694,7 @@ WorldTinder/
 midnight-egg/
 ├── server/
 │   ├── index.js              # HTTP + WebSocket server, serves all three clients
-│   ├── session.js            # players, teams, scores, act timer
+│   ├── session.js            # players, scores, act timer
 │   ├── queue.js              # spell queue, cooldowns, fallbacks
 │   ├── llm/
 │   │   ├── prompts/          # forge.md, director.md, merge.md, hatch.md
@@ -746,7 +738,7 @@ midnight-egg/
 | Priority | Feature |
 |---|---|
 | **MVP** | Tower scene with egg, clock, and audience broomstick avatars |
-| **MVP** | Audience app: join, team sorting, submit spell, status updates |
+| **MVP** | Audience app: join, submit spell, status updates |
 | **MVP** | LLM spell forging → validated module → spell in the scene graph |
 | **MVP** | Catch (wand flick) and shield (left hand + shield word) |
 | **MVP** | Egg cracks, charge meter, win/lose at midnight |
@@ -831,7 +823,7 @@ Notes:
 ## Demo script
 
 1. **Set the scene (15 s).** Spectator screen shows the tower at dusk and a big QR code. *"Scan this. You're about to cast spells at our wizard."*
-2. **Sorting (20 s).** Judges join and get sorted into teams; their broomsticks appear around the tower on the screen.
+2. **Joining (20 s).** Judges join, each in their own color; their broomsticks appear around the tower on the screen.
 3. **First spells (45 s).** Judges type spells. The screen shows each spell's name and incantation as the caster chants it. The player turns toward the voice, catches, shields.
 4. **The return (15 s).** The player shouts a judge's own incantation back and hits their broomstick. The judge's phone buzzes.
 5. **Midnight (30 s).** The LLM merges the crowd's spells into one giant spell. The player catches it with both hands.
