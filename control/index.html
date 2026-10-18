@@ -31,7 +31,7 @@
     // goes to the server in a URL: the host console needs it, and the scene needs it when this isn't the server's machine.
     const key = new URLSearchParams(location.hash.slice(1)).get('key');
     const hash = key ? `#key=${encodeURIComponent(key)}` : '';
-    document.getElementById('scene').src = `/${hash}`;
+    document.getElementById('scene').src = `/?clean${hash}`; // ?clean: no status text over the view
     document.getElementById('host').src = `/host/${hash}`;
 
     // Phones need the server's network address, which only the server knows (this page may be open as localhost).

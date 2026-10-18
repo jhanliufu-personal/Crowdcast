@@ -6,6 +6,7 @@
   <title>WorldTinder — WebXR preview</title>
   <style>
     html, body { margin: 0; height: 100%; overflow: hidden; background: #111; font-family: system-ui, sans-serif; }
+    body.clean #info { display: none; } /* ?clean: just the scene, e.g. in the control page */
     #info {
       position: absolute; top: 10px; left: 10px; color: #ddd; font-size: 12px; line-height: 1.5;
       background: rgba(0, 0, 0, 0.55); padding: 8px 10px; border-radius: 6px; pointer-events: none;
@@ -28,8 +29,8 @@
   <div id="info">
     <div id="status">Loading scene…</div>
     <div id="sync">Live sync: connecting…</div>
-    <div class="headset-only">Desktop: drag to look · WASD/arrows to move (Shift to sprint) · Q/E down/up</div>
-    <div class="headset-only">VR: left stick to move (hold left trigger to sprint) · right stick to snap-turn</div>
+    <div class="headset-only">Desktop: drag to look · WASD/arrows to move (Shift to sprint) · Space to jump · hold C by a ledge to climb</div>
+    <div class="headset-only">VR: left stick to move (hold left trigger to sprint) · right stick to snap-turn · A to jump · hold left grip by a ledge to climb</div>
     <div class="viewer-only" id="headset-status">Headset: waiting for it to connect</div>
     <div class="viewer-only dim" id="recent-edits"></div>
     <div class="viewer-only">Drag to orbit · scroll to zoom · <a href="#" id="view-toggle">V: headset's view</a></div>
@@ -52,6 +53,7 @@
     // browser is the headset; ?headset or ?emulate make a desktop tab stand in for it, for testing without one.
     const ROLE = /OculusBrowser/.test(navigator.userAgent) || params.has('headset') || params.has('emulate') ? 'headset' : 'viewer';
     document.body.classList.add(ROLE);
+    if (params.has('clean')) document.body.classList.add('clean');
     // The server only takes scene edits from its own machine, or with the host key it prints at startup:
     // open the page as https://<mac-ip>:8443/#key=… on the Quest over Wi-Fi. In the hash, so page loads don't send it.
     const HOST_KEY = new URLSearchParams(location.hash.slice(1)).get('key') || '';
@@ -387,6 +389,7 @@
         roomSize.copy(size);
         model.name = 'world';
         placeEgg(model);
+        buildColliders(model);
         const spawn = SCENE_SPAWNS[SCENE_URL];
         if (spawn) {
           const offset = new THREE.Vector3(spawn[0] * WORLD_SCALE + model.position.x, 0, spawn[1] * WORLD_SCALE + model.position.z);
@@ -821,25 +824,30 @@
       }
     }
 
+    // Each returns what the body should do this frame: { jump, climb } (see updateBody).
     function handleKeyboard(dt) {
       const dx = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
       const dz = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
-      const dy = (keys.has('KeyE') ? 1 : 0) - (keys.has('KeyQ') ? 1 : 0);
       const sprinting = keys.has('ShiftLeft') || keys.has('ShiftRight');
-      if (dx || dz || dy) moveRig(dx, dz, dy, dt, MOVE_SPEED * (sprinting ? SPRINT : 1));
+      if (dx || dz) moveRig(dx, dz, 0, dt, MOVE_SPEED * (sprinting ? SPRINT : 1));
+      return { jump: keys.has('Space'), climb: keys.has('KeyC') };
     }
 
     function handleControllers(dt) {
+      const input = { jump: false, climb: false };
       const session = renderer.xr.getSession();
-      if (!session) return;
+      if (!session) return input;
       for (const source of session.inputSources) {
         const gp = source.gamepad;
         if (!gp || gp.axes.length < 4) continue;
         const ax = gp.axes[2], ay = gp.axes[3]; // thumbstick on xr-standard gamepads
+        // Buttons on xr-standard gamepads: 0 trigger, 1 grip, 4 A (right) / X (left).
         if (source.handedness === 'left') {
-          const sprinting = gp.buttons[0]?.pressed; // the trigger, on xr-standard gamepads
+          const sprinting = gp.buttons[0]?.pressed;
           if (Math.abs(ax) > 0.15 || Math.abs(ay) > 0.15) moveRig(ax, -ay, 0, dt, MOVE_SPEED * (sprinting ? SPRINT : 1));
+          input.climb = !!gp.buttons[1]?.pressed;
         } else if (source.handedness === 'right') {
+          input.jump = !!gp.buttons[4]?.pressed;
           if (snapReady && Math.abs(ax) > 0.7) {
             // Rotate the rig around the headset's position so the user turns in place.
             const head = camera.getWorldPosition(new THREE.Vector3());
@@ -852,18 +860,101 @@
           }
         }
       }
+      return input;
+    }
+
+    // ---- Body (headset): feet, gravity, solid furniture, jumping and climbing ----
+    // Colliders are upright round pillars (center x/z, radius, top) made from the room's centerpiece meshes: the
+    // hall's dais, pedestal and egg (named Sanctum__… and Egg__…). The player is a circle around the head's x/z.
+    // Anything up to STEP above your feet you just walk onto; taller things block you until you jump or climb.
+    const GRAVITY = 9.8;
+    const JUMP_SPEED = 5.4; // m/s upward: about 1.5 m high, enough to land on the 1.1 m pedestal
+    const STEP = 0.3; // m
+    const CLIMB_REACH = 2.5; // climb ledges up to this far above your feet (m)
+    const CLIMB_TIME = 0.5; // seconds holding the climb button next to a ledge
+    const BODY_RADIUS = 0.25 * PLAYER_SCALE;
+    const colliders = [];
+    function buildColliders(model) {
+      colliders.length = 0;
+      model.updateMatrixWorld(true);
+      const box = new THREE.Box3(), center = new THREE.Vector3(), size = new THREE.Vector3();
+      model.traverse((o) => {
+        if (!o.isMesh || !/^(sanctum|egg)__/i.test(o.name)) return;
+        box.setFromObject(o).getCenter(center);
+        box.getSize(size);
+        // The hall groups meshes by material, so e.g. Sanctum__Antique satin gold also holds trim along the whole
+        // nave; only compact pieces are the centerpiece itself.
+        if (Math.max(size.x, size.z) > 5) return;
+        colliders.push({ x: center.x, z: center.z, r: Math.max(size.x, size.z) / 2, top: box.max.y });
+      });
+    }
+
+    let fallSpeed = 0, onGround = true, jumpWasDown = false, climbingFor = 0;
+    const feet = new THREE.Vector3();
+    const shift = new THREE.Vector3();
+    function moveBody(dx, dy, dz) {
+      shift.set(dx, dy, dz);
+      if (renderer.xr.isPresenting) {
+        rig.position.add(shift);
+      } else {
+        camera.position.add(shift); // on desktop the rig stays at the origin, unscaled
+        controls.target.add(shift);
+      }
+    }
+    function updateBody(dt, { jump, climb }) {
+      camera.getWorldPosition(feet);
+      feet.y = renderer.xr.isPresenting ? rig.position.y : camera.position.y - EYE_HEIGHT;
+      const distance = (c) => Math.hypot(feet.x - c.x, feet.z - c.z);
+
+      // Climb: hold the button next to a ledge within reach, and after a moment you're up on it, just inside the edge.
+      const ledge = climb && colliders
+        .filter((c) => c.top - feet.y > STEP && c.top - feet.y <= CLIMB_REACH && distance(c) < c.r + BODY_RADIUS + 0.3)
+        .sort((a, b) => a.top - b.top)[0];
+      climbingFor = ledge ? climbingFor + dt : 0;
+      if (ledge && climbingFor >= CLIMB_TIME) {
+        const d = distance(ledge) || 1, to = Math.max(0, ledge.r - 0.2);
+        moveBody(ledge.x + ((feet.x - ledge.x) / d) * to - feet.x, ledge.top - feet.y, ledge.z + ((feet.z - ledge.z) / d) * to - feet.z);
+        camera.getWorldPosition(feet).setY(ledge.top);
+        fallSpeed = 0;
+        climbingFor = 0;
+      }
+
+      // Push out of anything taller than a step.
+      for (const c of colliders) {
+        if (c.top - feet.y <= STEP) continue;
+        const d = distance(c), min = c.r + BODY_RADIUS;
+        if (d >= min) continue;
+        const nx = d > 1e-4 ? (feet.x - c.x) / d : 1, nz = d > 1e-4 ? (feet.z - c.z) / d : 0;
+        moveBody(nx * (min - d), 0, nz * (min - d));
+        feet.x += nx * (min - d);
+        feet.z += nz * (min - d);
+      }
+
+      // Gravity, down to the floor or the top of whatever you're standing over.
+      let ground = 0;
+      for (const c of colliders) if (distance(c) < c.r && c.top - feet.y <= STEP) ground = Math.max(ground, c.top);
+      if (jump && !jumpWasDown && onGround) fallSpeed = -JUMP_SPEED;
+      jumpWasDown = jump;
+      fallSpeed += GRAVITY * dt;
+      let y = feet.y - fallSpeed * dt;
+      onGround = y <= ground;
+      if (onGround) {
+        y = ground;
+        fallSpeed = 0;
+      }
+      moveBody(0, y - feet.y, 0);
     }
 
     // OrbitControls and the desktop eye height only apply outside VR.
     renderer.xr.addEventListener('sessionstart', () => {
       controls.enabled = false;
-      rig.position.set(camera.position.x, 0, camera.position.z);
+      rig.position.set(camera.position.x, camera.position.y - EYE_HEIGHT, camera.position.z);
       rig.scale.setScalar(PLAYER_SCALE); // the headset's real-world pose, scaled up: a taller player
       camera.position.set(0, 0, 0);
     });
     renderer.xr.addEventListener('sessionend', () => {
-      camera.position.set(rig.position.x, EYE_HEIGHT, rig.position.z);
-      controls.target.set(camera.position.x, EYE_HEIGHT, camera.position.z - 0.01);
+      camera.position.set(rig.position.x, rig.position.y + EYE_HEIGHT, rig.position.z);
+      controls.target.set(camera.position.x, camera.position.y, camera.position.z - 0.01);
       rig.position.set(0, 0, 0);
       rig.rotation.set(0, 0, 0);
       rig.scale.setScalar(1);
@@ -1274,9 +1365,9 @@
         applyHeadsetState(ease); // after patches, so the headset's state wins
         updateViewerCamera();
       } else if (renderer.xr.isPresenting) {
-        handleControllers(dt);
+        updateBody(dt, handleControllers(dt));
       } else {
-        handleKeyboard(dt);
+        updateBody(dt, handleKeyboard(dt));
         controls.update();
       }
       renderer.render(scene, camera);
