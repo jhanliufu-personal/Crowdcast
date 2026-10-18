@@ -30,7 +30,7 @@ class Catalog:
         if self.targeting["mode"] not in TARGET_MODES:
             raise ValueError(f"targeting.mode must be one of {TARGET_MODES}")
         # The player in the headset: a hit costs damage_per_power × the spell's power; heal_per_s restores it.
-        self.player = {"max_hp": 100, "damage_per_power": 10, "heal_per_s": 2, **data.get("player", {})}
+        self.player = {"max_hp": 100, "damage_per_power": 10, "heal_per_s": 1, **data.get("player", {})}
         for s in self.spells.values():
             if s["asset"] not in self.assets or s["motion"] not in self.motions:
                 raise ValueError(f"catalog spell {s['id']!r} uses an unknown asset or motion")

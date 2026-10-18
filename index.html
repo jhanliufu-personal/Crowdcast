@@ -28,11 +28,11 @@
   <div id="info">
     <div id="status">Loading scene…</div>
     <div id="sync">Live sync: connecting…</div>
-    <div class="headset-only">Desktop: drag to look · WASD/arrows to move · Q/E down/up · B to add a book</div>
-    <div class="headset-only">VR: left stick to move · right stick to snap-turn · trigger to add a book</div>
+    <div class="headset-only">Desktop: drag to look · WASD/arrows to move (Shift to sprint) · Q/E down/up</div>
+    <div class="headset-only">VR: left stick to move (hold left trigger to sprint) · right stick to snap-turn</div>
     <div class="viewer-only" id="headset-status">Headset: waiting for it to connect</div>
     <div class="viewer-only dim" id="recent-edits"></div>
-    <div class="viewer-only">Drag to orbit · scroll to zoom · <a href="#" id="view-toggle">V: headset's view</a> · B: add a book in front of the user</div>
+    <div class="viewer-only">Drag to orbit · scroll to zoom · <a href="#" id="view-toggle">V: headset's view</a></div>
     <div class="viewer-only dim">No Quest? <a href="?headset">?headset</a> or <a href="?emulate">?emulate</a> make this tab stand in for it</div>
     <div>Model: <a href="https://sketchfab.com/3d-models/library-7fc61f0d65ee49d0b2904e85d1fa520e" target="_blank">"library"</a>
       by <a href="https://sketchfab.com/Pasha." target="_blank">Pasha</a>, CC-BY-4.0</div>
@@ -77,17 +77,22 @@
     }
 
     // Change this to preview a different scene, or pass ?scene=path/to/file.gltf
-    // ?scene=library/library.glb is the library room compressed (8 MB instead of 28 MB, so it loads over slow Wi-Fi):
-    //   npx @gltf-transform/cli optimize library/scene.gltf library/library.glb --compress meshopt --texture-compress webp --simplify false
-    const SCENE_URL = params.get('scene') || 'castle-hall/castle-hall.gltf';
+    // The .glb rooms are their .gltf originals compressed, so they load over slow Wi-Fi (castle hall: 4 MB instead of
+    // 27 MB; library: 8 MB instead of 28 MB). --join false keeps every mesh and its name (the egg is found by name):
+    //   npx @gltf-transform/cli optimize castle-hall/castle-hall.gltf castle-hall/castle-hall.glb \
+    //     --compress meshopt --texture-compress webp --simplify false --join false
+    const SCENE_URL = params.get('scene') || 'castle-hall/castle-hall.glb';
     // How much to enlarge a model so that 1 unit = 1 meter, and you're life-sized in it. The library comes in
     // about 4.5× too small: its shelves are 8 cm apart (real ones are ~35 cm) and its gallery rail is 20 cm tall (~0.9 m).
     const SCENE_SCALES = { 'library/scene.gltf': 4.5, 'library/library.glb': 4.5 };
     const WORLD_SCALE = SCENE_SCALES[SCENE_URL] ?? 1;
     // Where the user starts, as [x, z] in the model's own meters (the hall's egg is at its center).
-    const SCENE_SPAWNS = { 'castle-hall/castle-hall.gltf': [0, 9] };
-    const EYE_HEIGHT = 1.6; // meters, desktop camera only; in VR the headset supplies height
-    const MOVE_SPEED = 1.5; // meters per second
+    const SCENE_SPAWNS = { 'castle-hall/castle-hall.gltf': [0, 9], 'castle-hall/castle-hall.glb': [0, 9] };
+    // The player is this many times life size: in VR the rig (and so the head, hands and stride) is scaled up.
+    const PLAYER_SCALE = 2;
+    const EYE_HEIGHT = 1.6 * PLAYER_SCALE; // meters, desktop camera only; in VR the headset supplies height
+    const MOVE_SPEED = 1.5 * PLAYER_SCALE; // meters per second
+    const SPRINT = 2.5; // speed multiplier while sprinting: left trigger in VR, Shift on desktop
     const SNAP_TURN = Math.PI / 6;
 
     const statusEl = document.getElementById('status');
@@ -297,19 +302,6 @@
       }
     }
 
-    // Each trigger press (or B on desktop) adds a floating book 40 cm in front of whatever is pointing.
-    const spawnPos = new THREE.Vector3();
-    const spawnDir = new THREE.Vector3();
-    function spawnInFrontOf(object3d, distance) {
-      object3d.getWorldPosition(spawnPos);
-      // Cameras report the direction they look along; other objects (like controllers) report their +Z axis,
-      // which points backwards since they aim down -Z.
-      object3d.getWorldDirection(spawnDir);
-      spawnPos.addScaledVector(spawnDir, object3d.isCamera ? distance : -distance);
-      edit([{ name: 'add_object', input: { name: 'book', shape: 'book', color: '#7a1f1f', size: 0.22, position: spawnPos.toArray(), animation: 'float' } }]);
-      statusEl.textContent = 'Added a book';
-    }
-
     // Controllers live inside the rig so they move with thumbstick locomotion.
     // A short line shows where each one points (no controller models are loaded).
     const pointerGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -0.4)]);
@@ -320,13 +312,8 @@
         controller.userData.hand = e.data.handedness;
         controller.name = `controller-${e.data.handedness}`;
       });
-      controller.addEventListener('selectstart', () => spawnInFrontOf(controller, 0.4));
       rig.add(controller);
       return controller;
-    });
-
-    window.addEventListener('keydown', (e) => {
-      if (e.code === 'KeyB' && !typing(e) && !renderer.xr.isPresenting) spawnInFrontOf(head, 1.0);
     });
 
     // Scene state and commands (add_object / update_object / remove_object): the server's scene edits arrive as
@@ -418,7 +405,11 @@
         worldLoaded();
       },
       (xhr) => {
-        if (xhr.total) statusEl.textContent = `Loading scene… ${Math.round((xhr.loaded / xhr.total) * 100)}%`;
+        // A .glb is one file, so this is the whole room. Once it's all here, the meshes and textures still unpack.
+        const mb = (bytes) => (bytes / 1e6).toFixed(1);
+        statusEl.textContent = !xhr.total ? `Loading scene… ${mb(xhr.loaded)} MB`
+          : xhr.loaded < xhr.total ? `Loading scene… ${Math.floor((xhr.loaded / xhr.total) * 100)}% (${mb(xhr.loaded)} of ${mb(xhr.total)} MB)`
+          : 'Loading scene… 100%, unpacking';
       },
       (err) => {
         statusEl.textContent = `Failed to load ${SCENE_URL}: ${err.message || err}`;
@@ -809,14 +800,14 @@
     const up = new THREE.Vector3(0, 1, 0);
     let snapReady = true;
 
-    function moveRig(dx, dz, dy, dt) {
+    function moveRig(dx, dz, dy, dt, speed = MOVE_SPEED) {
       // dx/dz are relative to where the head is looking, flattened onto the floor.
       camera.getWorldDirection(forward);
       forward.y = 0;
       if (forward.lengthSq() < 1e-6) return;
       forward.normalize();
       right.crossVectors(forward, up);
-      const step = MOVE_SPEED * dt;
+      const step = speed * dt;
       const delta = new THREE.Vector3()
         .addScaledVector(forward, dz * step)
         .addScaledVector(right, dx * step)
@@ -834,7 +825,8 @@
       const dx = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
       const dz = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
       const dy = (keys.has('KeyE') ? 1 : 0) - (keys.has('KeyQ') ? 1 : 0);
-      if (dx || dz || dy) moveRig(dx, dz, dy, dt);
+      const sprinting = keys.has('ShiftLeft') || keys.has('ShiftRight');
+      if (dx || dz || dy) moveRig(dx, dz, dy, dt, MOVE_SPEED * (sprinting ? SPRINT : 1));
     }
 
     function handleControllers(dt) {
@@ -845,7 +837,8 @@
         if (!gp || gp.axes.length < 4) continue;
         const ax = gp.axes[2], ay = gp.axes[3]; // thumbstick on xr-standard gamepads
         if (source.handedness === 'left') {
-          if (Math.abs(ax) > 0.15 || Math.abs(ay) > 0.15) moveRig(ax, -ay, 0, dt);
+          const sprinting = gp.buttons[0]?.pressed; // the trigger, on xr-standard gamepads
+          if (Math.abs(ax) > 0.15 || Math.abs(ay) > 0.15) moveRig(ax, -ay, 0, dt, MOVE_SPEED * (sprinting ? SPRINT : 1));
         } else if (source.handedness === 'right') {
           if (snapReady && Math.abs(ax) > 0.7) {
             // Rotate the rig around the headset's position so the user turns in place.
@@ -865,6 +858,7 @@
     renderer.xr.addEventListener('sessionstart', () => {
       controls.enabled = false;
       rig.position.set(camera.position.x, 0, camera.position.z);
+      rig.scale.setScalar(PLAYER_SCALE); // the headset's real-world pose, scaled up: a taller player
       camera.position.set(0, 0, 0);
     });
     renderer.xr.addEventListener('sessionend', () => {
@@ -872,6 +866,7 @@
       controls.target.set(camera.position.x, EYE_HEIGHT, camera.position.z - 0.01);
       rig.position.set(0, 0, 0);
       rig.rotation.set(0, 0, 0);
+      rig.scale.setScalar(1);
       controls.enabled = true;
     });
 
@@ -900,7 +895,7 @@
       return true;
     }
 
-    // Edits made on this page (like the trigger's books) go through the server, so every page applies the same
+    // Edits made on this page go through the server, so every page applies the same
     // edits in the same order. If the server is unreachable they only apply here.
     function edit(commands) {
       if (!send({ type: 'commands', commands })) applyCommands(commands);
@@ -1133,6 +1128,7 @@
       const avatar = new THREE.Group();
       avatar.name = 'viewer:head';
       avatar.position.set(0, EYE_HEIGHT, 0);
+      avatar.scale.setScalar(PLAYER_SCALE);
       const skin = new THREE.MeshStandardMaterial({ color: 0x4fc3f7, roughness: 0.5 });
       const skull = new THREE.Mesh(new THREE.SphereGeometry(0.11, 24, 16), skin);
       skull.scale.set(1, 1.2, 1.15);
