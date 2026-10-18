@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>WorldTinder — WebXR preview</title>
+  <title>Midnight Egg</title>
   <style>
     html, body { margin: 0; height: 100%; overflow: hidden; background: #111; font-family: system-ui, sans-serif; }
     body.clean #info { display: none; } /* ?clean: just the scene, e.g. in the control page */
@@ -318,6 +318,121 @@
       return controller;
     });
 
+    // ---- Sound (headset only) ----
+    // Effects are synthesized with the Web Audio API, so there's nothing to download, and a spell's sounds come from
+    // where the spell is. The music is one CC0 loop (assets/audio/). Viewers stay silent; ?mute silences the headset.
+    // Browsers only allow audio after a click: pressing Enter VR counts, and so does a click on a ?headset tab.
+    // sound.play(name, position?) plays one of the recipes below; patches get it as ctx.sound.
+    const sound = (() => {
+      if (ROLE !== 'headset' || params.has('mute')) return { play() {} };
+      const listener = new THREE.AudioListener();
+      camera.add(listener); // follows the head, so positional sounds pan and fade around it
+      const ac = listener.context;
+      const out = listener.getInput();
+      const noise = ac.createBuffer(1, ac.sampleRate, ac.sampleRate);
+      const samples = noise.getChannelData(0);
+      for (let i = 0; i < samples.length; i++) samples[i] = Math.random() * 2 - 1;
+
+      // Building blocks, starting at ac time `at` and playing into `dest` (a panner, or straight out).
+      function envelope(gain, at, peak, attack, decay) {
+        gain.gain.setValueAtTime(0.0001, at);
+        gain.gain.exponentialRampToValueAtTime(peak, at + attack);
+        gain.gain.exponentialRampToValueAtTime(0.0001, at + attack + decay);
+      }
+      function hiss(dest, at, { type = 'bandpass', from, to, q = 1, peak, attack, decay }) {
+        const source = new AudioBufferSourceNode(ac, { buffer: noise, loop: true });
+        const filter = new BiquadFilterNode(ac, { type, Q: q });
+        filter.frequency.setValueAtTime(from, at);
+        filter.frequency.exponentialRampToValueAtTime(to, at + attack + decay);
+        const gain = ac.createGain();
+        envelope(gain, at, peak, attack, decay);
+        source.connect(filter).connect(gain).connect(dest);
+        source.start(at, Math.random());
+        source.stop(at + attack + decay + 0.05);
+      }
+      function tone(dest, at, { wave = 'sine', from, to = from, peak, attack = 0.005, decay }) {
+        const osc = new OscillatorNode(ac, { type: wave });
+        osc.frequency.setValueAtTime(from, at);
+        osc.frequency.exponentialRampToValueAtTime(to, at + attack + decay);
+        const gain = ac.createGain();
+        envelope(gain, at, peak, attack, decay);
+        osc.connect(gain).connect(dest);
+        osc.start(at);
+        osc.stop(at + attack + decay + 0.05);
+      }
+      const pings = (dest, at, count, spread, peak) => {
+        for (let i = 0; i < count; i++) {
+          tone(dest, at + Math.random() * spread, { wave: 'triangle', from: 1300 + Math.random() * 2800, peak, decay: 0.12 + Math.random() * 0.25 });
+        }
+      };
+      const recipes = {
+        // A spell appears: a rising whoosh with a little thump, like something thrown.
+        whoosh: (d, t) => {
+          hiss(d, t, { from: 300, to: 2400, q: 1.2, peak: 0.6, attack: 0.25, decay: 0.45 });
+          tone(d, t, { from: 140, to: 60, peak: 0.25, decay: 0.15 });
+        },
+        // You slice it: a crisp crack and a sprinkle of glassy pings.
+        shatter: (d, t) => {
+          hiss(d, t, { type: 'highpass', from: 1800, to: 900, peak: 0.7, attack: 0.003, decay: 0.22 });
+          pings(d, t, 6, 0.2, 0.12);
+        },
+        // It hits you: a heavy thump, a crunch, and a descending "ouch" buzz.
+        thud: (d, t) => {
+          tone(d, t, { from: 180, to: 38, peak: 1, decay: 0.4 });
+          hiss(d, t, { type: 'lowpass', from: 900, to: 120, peak: 0.8, attack: 0.002, decay: 0.2 });
+          hiss(d, t, { type: 'highpass', from: 3000, to: 1500, peak: 0.25, attack: 0.002, decay: 0.06 });
+          tone(d, t + 0.04, { wave: 'sawtooth', from: 320, to: 110, peak: 0.18, attack: 0.01, decay: 0.32 });
+        },
+        // It hits the egg: a sharp crack and a ringing porcelain clink.
+        crack: (d, t) => {
+          hiss(d, t, { type: 'highpass', from: 2500, to: 1200, peak: 0.9, attack: 0.002, decay: 0.09 });
+          tone(d, t, { wave: 'square', from: 220, to: 90, peak: 0.1, decay: 0.12 });
+          hiss(d, t + 0.06, { from: 1600, to: 700, q: 3, peak: 0.35, attack: 0.002, decay: 0.1 });
+          tone(d, t + 0.01, { wave: 'sine', from: 1850, peak: 0.22, decay: 0.7 });
+          tone(d, t + 0.01, { wave: 'sine', from: 2790, peak: 0.12, decay: 0.5 });
+        },
+        // It flies past you: a softer, falling whoosh.
+        swish: (d, t) => hiss(d, t, { from: 1800, to: 400, q: 1.5, peak: 0.25, attack: 0.05, decay: 0.35 }),
+        // The egg breaks: two cracks, a low boom, a shower of pieces and a sad sliding note.
+        eggBreak: (d, t) => {
+          recipes.crack(d, t);
+          recipes.crack(d, t + 0.12);
+          tone(d, t, { from: 110, to: 32, peak: 1, decay: 1.4 });
+          hiss(d, t, { type: 'lowpass', from: 1200, to: 100, peak: 0.6, attack: 0.01, decay: 1 });
+          pings(d, t + 0.1, 14, 0.8, 0.08);
+          tone(d, t + 0.5, { wave: 'sawtooth', from: 392, to: 196, peak: 0.12, attack: 0.05, decay: 1.2 });
+        },
+      };
+
+      function play(name, position) {
+        if (ac.state !== 'running' || !recipes[name]) return;
+        let dest = out;
+        if (position) {
+          dest = new PannerNode(ac, { panningModel: 'HRTF', distanceModel: 'inverse', refDistance: 2,
+            positionX: position.x, positionY: position.y, positionZ: position.z });
+          dest.connect(out);
+          setTimeout(() => dest.disconnect(), 3000);
+        }
+        recipes[name](dest, ac.currentTime + 0.01);
+      }
+
+      // Music: one quiet loop, from the first click on.
+      let music = null;
+      async function start() {
+        await ac.resume();
+        if (music) return;
+        music = new THREE.Audio(listener);
+        music.setBuffer(await new THREE.AudioLoader().loadAsync('assets/audio/swinging-sweet.ogg'));
+        music.setLoop(true);
+        music.setVolume(0.25);
+        music.play();
+      }
+      window.addEventListener('pointerdown', start);
+      window.addEventListener('keydown', start);
+      renderer.xr.addEventListener('sessionstart', start);
+      return { play };
+    })();
+
     // Scene state and commands (add_object / update_object / remove_object): the server's scene edits arrive as
     // commands (see Live sync), and POST /api/chat sends sceneState() to Claude with a message.
     const round = (v) => Math.round(v * 100) / 100;
@@ -436,7 +551,7 @@
     // just below the line of sight. updateHud(dt) runs every frame (in VR too), easing the bars toward new values.
     let updateHud = null;
     if (ROLE === 'headset') {
-      const W = 1024, H = 288;
+      const W = 1024, H = 392;
       const canvas = document.createElement('canvas');
       canvas.width = W;
       canvas.height = H;
@@ -455,7 +570,8 @@
       camera.add(hud);
 
       const GOLD = ['#f6e3a6', '#c9a24f', '#8a6a2c'];
-      const game = { eggLeft: 5, eggMax: 5, hp: 100, maxHp: 100 };
+      const game = { eggLeft: 5, eggMax: 5, hp: 100, maxHp: 100, phase: 'lobby', outcome: null, remaining: 0, remainingAt: 0 };
+      let clockShown = '';
       const shown = { hp: 100, lost: 100, lostHold: 0, eggFlash: 0, pulse: 0 };
       let dirty = true;
       let hudSynced = false;
@@ -572,8 +688,10 @@
         g.strokeStyle = 'rgba(246, 227, 166, 0.18)';
         g.stroke();
         g.beginPath();
-        g.moveTo(64, H / 2);
-        g.lineTo(W - 64, H / 2);
+        for (const y of [144, 262]) { // between the rows
+          g.moveTo(64, y);
+          g.lineTo(W - 64, y);
+        }
         g.strokeStyle = 'rgba(246, 227, 166, 0.12)';
         g.stroke();
 
@@ -618,7 +736,30 @@
         g.restore();
         value(Math.round(game.hp), game.maxHp, W - 60, row2);
 
+        // The clock: time to midnight, and the act. Red in the last 30 seconds.
+        const row3 = 324;
+        label('TIME', 64, row3);
+        const clock = clockText();
+        g.textBaseline = 'middle';
+        g.textAlign = 'left';
+        g.font = '500 30px system-ui, -apple-system, sans-serif';
+        g.fillStyle = 'rgba(255, 255, 255, 0.65)';
+        g.fillText(clock.note, 214, row3);
+        g.textAlign = 'right';
+        g.font = '700 48px system-ui, -apple-system, sans-serif';
+        g.fillStyle = clock.urgent ? `rgba(255, ${110 + 60 * shown.pulse}, 110, 1)` : '#ffffff';
+        g.fillText(clock.time, W - 60, row3);
+        clockShown = clock.time + clock.note;
+
         texture.needsUpdate = true;
+      }
+
+      const ACTS = { dusk: 'Dusk', storm: 'Storm', midnight: 'Midnight' };
+      function clockText() {
+        if (game.phase === 'over') return { time: '', note: game.outcome === 'hatched' ? 'It hatched!' : 'The egg broke', urgent: false };
+        if (!(game.phase in ACTS)) return { time: '', note: 'Waiting for the round', urgent: false };
+        const left = Math.max(0, Math.ceil(game.remaining - (performance.now() - game.remainingAt) / 1000));
+        return { time: `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`, note: `${ACTS[game.phase]} · to midnight`, urgent: left <= 30 };
       }
 
       updateHud = (dt) => {
@@ -627,9 +768,10 @@
         if (shown.lost < shown.hp) shown.lost = shown.hp;
         else if ((shown.lostHold -= dt) <= 0) shown.lost = Math.max(shown.hp, shown.lost - dt * 40);
         shown.eggFlash = Math.max(0, shown.eggFlash - dt * 1.5);
-        shown.pulse = game.hp / game.maxHp < 0.25 ? 0.5 + 0.5 * Math.sin(performance.now() / 160) : 0;
+        const clock = clockText();
+        shown.pulse = game.hp / game.maxHp < 0.25 || clock.urgent ? 0.5 + 0.5 * Math.sin(performance.now() / 160) : 0;
         const moving = Math.abs(before.hp - shown.hp) > 0.02 || Math.abs(before.lost - shown.lost) > 0.02
-          || before.eggFlash !== shown.eggFlash || before.pulse !== shown.pulse;
+          || before.eggFlash !== shown.eggFlash || before.pulse !== shown.pulse || clock.time + clock.note !== clockShown;
         if (moving || dirty) {
           dirty = false;
           draw();
@@ -641,7 +783,8 @@
           if (eggLeft < game.eggLeft) shown.eggFlash = 1;
           if (state.player.hp < game.hp - 0.5) shown.lostHold = 0.6; // hold the lost health a moment, then drain it
           dirty ||= eggLeft !== game.eggLeft || Math.round(state.player.hp) !== Math.round(game.hp);
-          Object.assign(game, { eggLeft, eggMax: state.max_cracks, hp: state.player.hp, maxHp: state.player.max_hp });
+          Object.assign(game, { eggLeft, eggMax: state.max_cracks, hp: state.player.hp, maxHp: state.player.max_hp,
+            phase: state.phase, outcome: state.outcome, remaining: state.remaining_s, remainingAt: performance.now() });
           if (!hudSynced) {
             hudSynced = true; // the first state: start there, rather than animating down from full health
             shown.hp = shown.lost = game.hp;
@@ -755,8 +898,12 @@
         if (now === broken) return;
         broken = now;
         since = 0;
-        if (broken) shatter();
-        else restore();
+        if (broken) {
+          shatter();
+          sound.play('eggBreak', egg.position);
+        } else {
+          restore();
+        }
       });
 
       updateEggBreak = (dt) => {
@@ -1060,6 +1207,7 @@
     //   ctx.load(url)            load a glTF/GLB: resolves to { scene, animations, … }
     //   ctx.import(path)         load a three.js addon, e.g. await ctx.import('geometries/TextGeometry.js')
     //   ctx.head                 the user's head, on any page (the camera looks down its -Z)
+    //   ctx.sound(name, position?) a sound on the headset (whoosh, shatter, thud, crack, swish, eggBreak); silent elsewhere
     //   ctx.egg()                the egg the player guards: an Object3D at its center, with userData.box (world space)
     //   ctx.isViewer             true on viewers: patches run there too, for looks, but the headset's state wins, so
     //                            skip side effects there (like adding objects or sending edits)
@@ -1081,6 +1229,7 @@
       patches.set(id, patch);
       const ctx = {
         THREE, scene, camera, head, rig, controllers, renderer, root: patch.root,
+        sound: sound.play,
         isViewer: ROLE === 'viewer',
         world: () => worldModel,
         egg: () => egg,

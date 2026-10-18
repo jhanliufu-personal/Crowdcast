@@ -32,9 +32,9 @@ server runs.
 ```
 engine claims a REMIX/NOVEL request ──▶ forge.py
    step 0  exact     the library has a spell for the same recipe            no model call
-   step 1  adapt     REMIX: change the named catalog block                    spell-adapt (Haiku), no code
-   step 2  combine   NOVEL, and a library item matches its words              spell-combine (Haiku), no code
-   step 3  new       NOVEL with no match                                      spell-new (Sonnet), may write code
+   step 1  adapt     REMIX: change the named catalog block                    spell-adapt (Opus), no code  
+   step 2  combine   NOVEL, and a library item matches its words              spell-combine (Opus), no code  
+   step 3  new       NOVEL with no match                                      spell-new (Opus), may write code  
 ──▶ checks (catalog values, validate_spell, codecheck on new code; one repair call if time remains)
 ──▶ job.ack(spell)   (or job.nack, or the nearest catalog preset on the last attempt / at the usage limit)
 ──▶ engine casts it ──▶ bridge.py: patch "spell-<id>" ──▶ the headset runs it ──▶ "spawned"

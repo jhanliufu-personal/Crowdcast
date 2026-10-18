@@ -97,7 +97,7 @@ to permit it. HTTPS alone cannot fix a blocked network path.
 | Setting | Default | Meaning |
 |---|---|---|
 | `WORLDTINDER_BACKEND` (environment) or `backend` in `harness/orchestrator.md` | `claude-cli` | `claude-cli` runs the Claude Code CLI headless (`claude -p`) on your subscription, with all of its tools and MCP servers disabled and any API key removed from its environment; each call starts a process. `api` calls the Claude API with structured outputs (needs `ANTHROPIC_API_KEY`). |
-| `model`, `effort`, `max_tokens` in `harness/workers/*.md` | Haiku 5.5 for adapt and combine, Sonnet 5.5 for new spells and scene edits, effort `low` | Per worker. |
+| `model`, `effort`, `max_tokens` in `harness/workers/*.md` | Opus 5.5 for every worker, effort `low` (needs Claude Code 2.1.280 or newer for the `claude-cli` backend; `claude update`) | Per worker. |
 | `slots`, `scene_max_slots` in `harness/orchestrator.md` | 4, 1 | How many Claude calls run at once, and how many of them scene edits may use. |
 
 Model-written spell code is checked with acorn (vendored in `vendor/acorn/`), so new code needs Node.js; without it, new spells fly as plain shapes.

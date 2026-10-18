@@ -1,6 +1,6 @@
 ---
 handles: spell/new
-model: claude-sonnet-5-5
+model: claude-opus-5-5
 effort: low
 max_tokens: 6000
 output: forge_spell_new

@@ -207,13 +207,19 @@ class LibraryTest(unittest.TestCase):
         self.assertEqual(reloaded.get(first)["status"], "quarantined")
 
 
+def worker_model(name):
+    """The model a worker file asks for, so these tests check which worker ran without pinning model names."""
+    path = Path(__file__).resolve().parent.parent / "harness" / "workers" / f"{name}.md"
+    return parse_md(path.read_text(encoding="utf-8"))[0]["model"]
+
+
 class ForgeTest(HarnessTest):
     def test_remix_uses_adapt_and_fast_model(self):
         self.answer_with(lambda r: spell_answer())
         request = self.wait(self.cast(ing("asset", "fireball"), text("that splits into three")))
         self.assertEqual(request.status, Status.READY)
         self.assertEqual(request.spell["harness"]["step"], "adapt")
-        self.assertEqual(self.calls[0]["model"], "claude-haiku-5-5")
+        self.assertEqual(self.calls[0]["model"], worker_model("spell-adapt"))
         self.assertEqual(request.spell["behaviors"][0]["id"], "split")
         self.assertEqual(request.spell["behaviors"][0]["params"]["count"], 3)
         self.assertIn("SPEED", self.calls[0]["system"])  # the policy comes first
@@ -245,7 +251,7 @@ class ForgeTest(HarnessTest):
         self.answer_with(lambda r: spell_answer(object="teapot", behaviors=[], new_object=new_object))
         request = self.wait(self.cast(text("a screaming teapot")))
         self.assertEqual(request.spell["harness"]["step"], "new")
-        self.assertEqual(self.calls[0]["model"], "claude-sonnet-5-5")
+        self.assertEqual(self.calls[0]["model"], worker_model("spell-new"))
         self.assertIn("Spell code API", self.calls[0]["system"])
         stored = request.spell["asset"]["object"]["id"]
         self.assertTrue(stored.startswith("teapot-"))
@@ -367,7 +373,7 @@ class SceneTest(HarnessTest):
         self.assertEqual(job.result["commands"][0]["name"], "add_object")
         self.assertEqual(len(job.result["commands"]), 1)
         self.assertEqual(self.hub.ops[-1]["commands"][0]["input"]["name"], "blue-sphere")
-        self.assertEqual(self.calls[0]["model"], "claude-sonnet-5-5")
+        self.assertEqual(self.calls[0]["model"], worker_model("scene-editor"))
 
     def test_conflict_regenerates(self):
         def answer(r):
