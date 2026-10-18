@@ -647,9 +647,81 @@
       });
     }
 
-    // When the egg breaks (the round's outcome is "broken"): it splinters into shards of shell, gold and emerald,
-    // and the view fades to dark with a frowny face. Everything comes back when a new round or a reset starts.
+    // The end of a round, from its outcome. "broken": the egg splinters into shards of shell, gold and emerald, and
+    // the view fades to dark with a frowny face. "hatched" (it survived until midnight): it splits open and a chest
+    // of gold rises out of it, opens and spills coins. Everything comes back when a new round or a reset starts.
     let updateEggBreak = null;
+
+    // A hit (on the egg or the player): the view shakes briefly, flashes red, and "Ouch!" pops up, then fades.
+    // The headset's spell runtime calls it the moment a spell hits (ctx.hit); other pages notice it in the game state.
+    let hitFeedback = null, updateHitFeedback = null;
+    {
+      const SHAKE_S = 0.35, SHAKE_M = 0.025; // short and small: a big or long shake is uncomfortable in a headset
+      const red = new THREE.Mesh(
+        new THREE.SphereGeometry(0.4, 24, 12),
+        new THREE.MeshBasicMaterial({ color: 0xff1a1a, side: THREE.BackSide, transparent: true, opacity: 0, depthTest: false, depthWrite: false }),
+      );
+      red.renderOrder = 1980;
+      red.visible = false;
+      camera.add(red);
+      const ouchCanvas = document.createElement('canvas');
+      ouchCanvas.width = 512;
+      ouchCanvas.height = 192;
+      const og = ouchCanvas.getContext('2d');
+      og.textAlign = 'center';
+      og.textBaseline = 'middle';
+      og.font = '900 128px system-ui, -apple-system, sans-serif';
+      og.lineJoin = 'round';
+      og.lineWidth = 16;
+      og.strokeStyle = '#3a0000';
+      og.strokeText('Ouch!', 256, 100);
+      og.fillStyle = '#ffffff';
+      og.fillText('Ouch!', 256, 100);
+      const ouchTexture = new THREE.CanvasTexture(ouchCanvas);
+      ouchTexture.colorSpace = THREE.SRGBColorSpace;
+      const ouch = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.24, 0.09),
+        new THREE.MeshBasicMaterial({ map: ouchTexture, transparent: true, opacity: 0, depthTest: false, depthWrite: false, toneMapped: false }),
+      );
+      ouch.position.set(0, 0.06, -0.5);
+      ouch.renderOrder = 1981;
+      ouch.visible = false;
+      camera.add(ouch);
+
+      let age = Infinity, lastAt = -Infinity;
+      const shake = new THREE.Vector3(); // the offset currently added to the rig
+      hitFeedback = () => {
+        if (performance.now() - lastAt < 800) return; // the same hit, seen twice (the runtime, then the game state)
+        lastAt = performance.now();
+        age = 0;
+        ouch.rotation.z = (Math.random() - 0.5) * 0.25;
+      };
+      updateHitFeedback = (dt) => {
+        rig.position.sub(shake);
+        shake.set(0, 0, 0);
+        if (age > 1.2) {
+          red.visible = ouch.visible = false;
+          return;
+        }
+        age += dt;
+        if (age < SHAKE_S) {
+          const k = SHAKE_M * (1 - age / SHAKE_S);
+          shake.set((Math.random() - 0.5) * 2 * k, (Math.random() - 0.5) * 2 * k, (Math.random() - 0.5) * 2 * k);
+          rig.position.add(shake);
+        }
+        red.visible = ouch.visible = true;
+        red.material.opacity = 0.45 * Math.max(0, 1 - age / 0.6);
+        ouch.material.opacity = age < 0.8 ? 1 : Math.max(0, 1 - (age - 0.8) / 0.4);
+        ouch.scale.setScalar(age < 0.15 ? 0.6 + (age / 0.15) * 0.6 : 1.2 - Math.min(0.2, (age - 0.15) * 0.8)); // pops in
+      };
+      let seen = null;
+      gameListeners.push((state) => {
+        const now = { cracks: state.cracks, hp: state.player.hp };
+        const inRound = !['lobby', 'over'].includes(state.phase);
+        if (seen && inRound && (now.cracks > seen.cracks || now.hp < seen.hp - 0.5)) hitFeedback();
+        seen = now;
+      });
+    }
     {
       const SHARDS = 70;
       const GRAVITY = 9.8;
@@ -694,7 +766,159 @@
       face.visible = false;
       camera.add(face);
 
-      let broken = false, since = 0, darkness = 0;
+      // What comes out of a hatched egg; ?hatch=chest picks another. Each is a single .glb in assets/models/ (Y up,
+      // front toward +Z; it's scaled so its largest dimension is `size` meters, and any animation in it plays once
+      // when it opens). If the file is missing, a wooden chest built from boxes stands in.
+      //   loot: what it spills ("coins" or "gems"), glow: the light on it, idle: breathes and sways once it's out
+      const HATCH_REWARDS = {
+        chest: { url: 'assets/models/treasure-chest.glb', size: 0.9, loot: 'coins', glow: '#ffcc66' },
+        dragon: { url: 'assets/models/emerald-dragon.glb', size: 1.7, loot: 'gems', glow: '#6dffa8', idle: true },
+      };
+      const HATCH = HATCH_REWARDS[params.get('hatch')] ?? HATCH_REWARDS.dragon;
+      let chestAsset = null; // Promise of { scene, animations }, or of null when there's no file
+      const loadChest = () => (chestAsset ??= gltfLoader.loadAsync(HATCH.url).catch(() => null));
+      worldReady.then(loadChest); // fetched early, so it's ready when the egg hatches
+
+      const wood = new THREE.MeshStandardMaterial({ color: '#6b3e1f', roughness: 0.8 });
+      const gold = new THREE.MeshStandardMaterial({ color: '#e0b448', roughness: 0.25, metalness: 0.9, emissive: '#3a2400' });
+      function builtChest() {
+        const chest = new THREE.Group();
+        const box = (w, h, d, m, x, y, z) => {
+          const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+          mesh.position.set(x, y, z);
+          return mesh;
+        };
+        chest.add(box(0.8, 0.42, 0.5, wood, 0, 0.21, 0));
+        for (const x of [-0.3, 0.3]) chest.add(box(0.06, 0.44, 0.52, gold, x, 0.21, 0));
+        chest.add(box(0.12, 0.14, 0.03, gold, 0, 0.33, 0.26)); // the lock plate
+        for (let i = 0; i < 9; i++) {
+          // Coins heaped inside, peeking over the rim.
+          const coin = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.015, 16), gold);
+          coin.position.set((Math.random() - 0.5) * 0.6, 0.43 + Math.random() * 0.04, (Math.random() - 0.5) * 0.34);
+          coin.rotation.set((Math.random() - 0.5) * 0.6, 0, (Math.random() - 0.5) * 0.6);
+          chest.add(coin);
+        }
+        // The lid turns about its back edge: a half cylinder lying along x.
+        const lid = new THREE.Group();
+        lid.position.set(0, 0.42, -0.25);
+        const top = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.25, 0.8, 24, 1, false, 0, Math.PI), wood);
+        top.rotation.set(0, 0, Math.PI / 2);
+        top.position.set(0, 0, 0.25);
+        lid.add(top);
+        for (const x of [-0.3, 0.3]) {
+          const band = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.06, 24, 1, false, 0, Math.PI), gold);
+          band.rotation.set(0, 0, Math.PI / 2);
+          band.position.set(x, 0, 0.25);
+          lid.add(band);
+        }
+        chest.add(lid);
+        chest.userData.lid = lid;
+        return chest;
+      }
+
+      const LOOT = {
+        coins: { geometry: new THREE.CylinderGeometry(0.035, 0.035, 0.008, 12), material: gold },
+        gems: {
+          geometry: new THREE.OctahedronGeometry(0.04),
+          material: new THREE.MeshStandardMaterial({ color: '#2fd17a', roughness: 0.15, metalness: 0.3, emissive: '#0b5a2c' }),
+        },
+      };
+      const glow = new THREE.PointLight(HATCH.glow, 0, 5, 1.5);
+      scene.add(glow);
+      let chest = null, mixer = null, chestRestY = 0, chestFacing = 0, coinsSpilled = false;
+
+      async function hatch() {
+        const box = egg.userData.box;
+        const center = box.getCenter(new THREE.Vector3());
+        shatter(0.45); // gentler than breaking: it splits open
+        const asset = await loadChest();
+        if (ending !== 'hatched') return; // reset while it loaded
+        let body;
+        if (asset) {
+          body = asset.scene.clone(true);
+          const size = new THREE.Box3().setFromObject(body).getSize(new THREE.Vector3());
+          body.scale.setScalar(HATCH.size / (Math.max(size.x, size.y, size.z) || 1));
+          const fitted = new THREE.Box3().setFromObject(body);
+          body.position.sub(new THREE.Vector3((fitted.min.x + fitted.max.x) / 2, fitted.min.y, (fitted.min.z + fitted.max.z) / 2));
+          if (asset.animations.length) {
+            mixer = new THREE.AnimationMixer(body);
+            const clip = asset.animations.find((a) => /open/i.test(a.name)) ?? asset.animations[0];
+            const action = mixer.clipAction(clip);
+            action.setLoop(THREE.LoopOnce, 1);
+            action.clampWhenFinished = true;
+            body.userData.open = action;
+          }
+        } else {
+          body = builtChest();
+        }
+        chest = new THREE.Group();
+        chest.add(body);
+        chest.userData.body = body;
+        // On the pedestal where the egg stood, turned toward the player.
+        chestRestY = ground(0);
+        const toHead = head.getWorldPosition(new THREE.Vector3()).sub(center);
+        chestFacing = Math.atan2(toHead.x, toHead.z);
+        chest.position.set(center.x, center.y, center.z);
+        chest.scale.setScalar(0.001);
+        scene.add(chest);
+        glow.position.set(center.x, chestRestY + 0.9, center.z);
+        coinsSpilled = false;
+      }
+
+      // Loot thrown up out of the open chest (or the dragon); it lands like the shards.
+      function spillCoins() {
+        const loot = LOOT[HATCH.loot] ?? LOOT.coins;
+        const from = chest.position.clone().add(new THREE.Vector3(0, 0.5, 0));
+        for (let i = 0; i < 45; i++) {
+          const coin = new THREE.Mesh(loot.geometry, loot.material);
+          coin.position.copy(from).add(new THREE.Vector3((Math.random() - 0.5) * 0.4, 0, (Math.random() - 0.5) * 0.2));
+          const out = new THREE.Vector3().randomDirection().setY(0).normalize().multiplyScalar(0.4 + Math.random() * 1.6);
+          coin.userData = {
+            velocity: out.add(new THREE.Vector3(0, 2.5 + Math.random() * 2.5, 0)),
+            spin: new THREE.Vector3().randomDirection().multiplyScalar(6 + Math.random() * 12),
+            center: chest.position.clone(),
+            resting: false,
+            delay: Math.random() * 1.2, // a stream, not one burst
+          };
+          coin.visible = false;
+          shards.add(coin);
+        }
+        pulseAll(0.5, 120);
+      }
+
+      function updateChest(dt) {
+        if (!chest) return;
+        const body = chest.userData.body;
+        // Rises out of the broken egg and grows, overshooting a little, then settles on the pedestal.
+        const t = Math.min(1, Math.max(0, (since - 0.4) / 1.1));
+        const back = 1.70158;
+        const grow = t === 0 ? 0.001 : 1 + (back + 1) * Math.pow(t - 1, 3) + back * Math.pow(t - 1, 2);
+        chest.scale.setScalar(Math.max(0.001, grow));
+        const center = egg.userData.box.getCenter(new THREE.Vector3());
+        chest.position.y = THREE.MathUtils.lerp(center.y, chestRestY, Math.min(1, t * 1.4));
+        chest.rotation.y = chestFacing + (1 - t) * Math.PI * 1.5; // spins round to face the player
+        glow.intensity = Math.min(1, since / 1.5) * (3 + 0.6 * Math.sin(since * 4));
+        if (HATCH.idle && t === 1) {
+          // Alive: it breathes and looks around a little.
+          chest.scale.y = 1 + 0.025 * Math.sin(since * 2.2);
+          chest.rotation.y = chestFacing + 0.15 * Math.sin((since - 1.5) * 0.8);
+        }
+        if (since > 1.7) {
+          if (body.userData.open && !body.userData.opened) {
+            body.userData.opened = true;
+            body.userData.open.play();
+          }
+          const lid = body.userData.lid;
+          if (lid) lid.rotation.x = -Math.min(1, (since - 1.7) / 0.6) * 1.9; // swings back
+          if (!coinsSpilled && since > 2) {
+            coinsSpilled = true;
+            spillCoins();
+          }
+        }
+        mixer?.update(dt);
+      }
+
+      let ending = null, since = 0, darkness = 0; // ending: null, "broken" or "hatched"
       let ground = () => 0; // floor height at a distance from the egg's center line
 
       // The dais is round: sample its height outward from the egg once, rather than raycasting every frame.
@@ -711,7 +935,7 @@
         ground = (dist) => heights[Math.min(heights.length - 1, Math.round(dist / 0.2))] ?? 0;
       }
 
-      function shatter() {
+      function shatter(force = 1) {
         const box = egg.userData.box;
         const center = box.getCenter(new THREE.Vector3());
         const size = box.getSize(new THREE.Vector3());
@@ -726,21 +950,25 @@
           const s = kind < 2 ? 0.06 + Math.random() * 0.08 : 0.03 + Math.random() * 0.03;
           shard.scale.set(s, s * (kind < 2 ? 0.25 : 1), s * (0.6 + Math.random() * 0.6));
           shard.rotation.set(Math.random() * 6, Math.random() * 6, Math.random() * 6);
-          const outward = new THREE.Vector3(dir.x, 0, dir.z).normalize().multiplyScalar(1.2 + Math.random() * 2.8);
+          const outward = new THREE.Vector3(dir.x, 0, dir.z).normalize().multiplyScalar((1.2 + Math.random() * 2.8) * force);
           shard.userData = {
-            velocity: outward.add(new THREE.Vector3(0, 1.5 + Math.random() * 3.5, 0)),
+            velocity: outward.add(new THREE.Vector3(0, (1.5 + Math.random() * 3.5) * Math.sqrt(force), 0)),
             spin: new THREE.Vector3().randomDirection().multiplyScalar(4 + Math.random() * 10),
             center,
             resting: false,
           };
           shards.add(shard);
         }
-        pulseAll(1, 300);
+        pulseAll(force, 300);
       }
 
       function restore() {
         for (const mesh of egg.userData.meshes ?? []) mesh.visible = true;
         shards.clear();
+        chest?.removeFromParent();
+        chest = null;
+        mixer = null;
+        glow.intensity = 0;
       }
 
       function pulseAll(intensity, ms) {
@@ -748,12 +976,13 @@
       }
 
       gameListeners.push((state) => {
-        const now = state.outcome === 'broken';
-        if (now === broken) return;
-        broken = now;
+        const now = state.outcome === 'broken' || state.outcome === 'hatched' ? state.outcome : null;
+        if (now === ending) return;
+        restore();
+        ending = now;
         since = 0;
-        if (broken) shatter();
-        else restore();
+        if (ending === 'broken') shatter();
+        else if (ending === 'hatched') hatch();
       });
 
       updateEggBreak = (dt) => {
@@ -761,6 +990,11 @@
         for (const shard of shards.children) {
           const u = shard.userData;
           if (u.resting) continue;
+          if (u.delay > 0) {
+            u.delay -= dt;
+            continue;
+          }
+          shard.visible = true;
           u.velocity.y -= GRAVITY * dt;
           shard.position.addScaledVector(u.velocity, dt);
           shard.rotation.x += u.spin.x * dt;
@@ -779,8 +1013,9 @@
             }
           }
         }
+        updateChest(dt);
         // Dark after a moment, so the splinters are seen first; light again quickly on a reset.
-        const target = broken && since > 1.2 ? 1 : 0;
+        const target = ending === 'broken' && since > 1.2 ? 1 : 0;
         darkness += (target - darkness) * Math.min(1, dt * (target ? 1.5 : 4));
         if (darkness < 0.002 && !target) darkness = 0;
         dark.visible = face.visible = darkness > 0;
@@ -975,6 +1210,7 @@
     //   ctx.scene, ctx.camera (what this page renders from), ctx.rig (what locomotion moves), ctx.controllers,
     //   ctx.renderer, ctx.world() (the room model), ctx.addObject / updateObject / removeObject (the editable objects)
     //   ctx.makeShape(shape, material) one of the editable objects' shapes, 1 m across
+    //   ctx.hit()                a hit on the egg or the player: the view shakes, flashes red and says "Ouch!"
     //   ctx.report(message)      the headset sends a game message to the server ({type, ...}; the harness's spell
     //                            runtime reports spell outcomes this way); does nothing on viewers
     // Returning a function from the code also registers it as cleanup.
@@ -993,6 +1229,7 @@
         isViewer: ROLE === 'viewer',
         world: () => worldModel,
         egg: () => egg,
+        hit: () => hitFeedback?.(),
         onFrame: (fn) => patch.frame.push(fn),
         onRemove: (fn) => patch.cleanup.push(fn),
         on: (target, type, fn) => {
@@ -1270,6 +1507,7 @@
       runPatches(dt, t);
       updateHud?.(dt);
       updateEggBreak?.(dt);
+      updateHitFeedback?.(dt);
       if (ROLE === 'viewer') {
         applyHeadsetState(ease); // after patches, so the headset's state wins
         updateViewerCamera();

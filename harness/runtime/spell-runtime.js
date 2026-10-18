@@ -350,12 +350,15 @@ function update(state, dt, t) {
     if (state.egg.userData.box.distanceToPoint(state.body.position) < state.size * 0.5) {
       burst(state);
       finish(state, 'hit');
+      ctx.hit?.();
+      pulse(null, 0.6, 120);
     } else if (age > state.flightTime + 0.6) {
       finish(state, 'shield');
     }
   } else if (state.body.position.distanceTo(head) < 0.2 + state.size * 0.5) {
     finish(state, 'hit');
-    flashOpacity = 0.6;
+    if (ctx.hit) ctx.hit(); // the page's shake, red flash and "Ouch!"
+    else flashOpacity = 0.6;
     pulse(null, 1.0, 150);
   } else if (age > state.flightTime + 0.6) {
     finish(state, 'shield');

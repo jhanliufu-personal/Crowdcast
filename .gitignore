@@ -230,3 +230,5 @@ scenes/live.tmp
 
 # Library items written by the harness (reviewed by hand before anything is committed)
 assets/generated/
+
+tmp/*
