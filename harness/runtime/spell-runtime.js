@@ -5,14 +5,15 @@
 // A spell patch calls runtime.cast(ctx, def, code). def is the engine's spell plus t0 (the headset clock when the
 // spell appears); code holds the library functions (object builder, behaviors), already checked by
 // harness/codecheck. def.target says what it flies at: "user" (the head) or "egg" (ctx.egg()). Only the headset
-// decides outcomes and reports them (ctx.report): sliced = "catch", reached its target = "hit", flew past =
-// "shield" (a stand-in for a dodge until the shield exists).
+// decides outcomes and reports them (ctx.report): sliced by the right-hand blade = "catch", reached its target =
+// "hit", blocked by the left-hand shield or flew past = "shield".
 
 const RULES = /*RULES*/ { deny_members: [], deny_member_pattern: '^$' };
 
 const LAUNCH_DISTANCE = 7;   // m from the head
 const EGG_LAUNCH_DISTANCE = 6; // m from the egg, on the player's side of it
 const BLADE_LENGTH = 0.6;
+const SHIELD_RADIUS = 0.16;  // in the controller's own space; the player is scaled up in VR, so 0.32 m there
 const MIN_SWIPE_SPEED = 1.5; // m/s at the blade tip
 const MIN_MOUSE_SPEED = 900; // px/s
 const MAX_MESHES = 150;      // in a spell's extra visuals
@@ -67,11 +68,35 @@ flash.visible = false;
 effects.add(flash);
 let flashOpacity = 0;
 
-if (!ctx.isViewer) ctx.controllers.forEach((c) => c.add(new THREE.Mesh(bladeGeo, bladeMat)));
-function addViewerBlades() {
-  for (const hand of ['left', 'right']) {
-    const cone = ctx.scene.getObjectByName(`viewer:hand-${hand}`);
-    if (cone && !cone.children.some((o) => o.geometry === bladeGeo)) cone.add(new THREE.Mesh(bladeGeo, bladeMat));
+// The left hand holds a shield (blocks spells, can't slice); the right hand, or one not known yet, a blade.
+const shieldDiscGeo = new THREE.CircleGeometry(SHIELD_RADIUS, 40); // faces along the controller's pointing axis
+const shieldRimGeo = new THREE.TorusGeometry(SHIELD_RADIUS, 0.008, 8, 48);
+const shieldMat = new THREE.MeshBasicMaterial({ color: 0x8fd3ff, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false });
+const shieldRimMat = new THREE.MeshBasicMaterial({ color: 0xffd76a });
+function equip(holder, hand) {
+  const want = hand === 'left' ? 'shield' : 'blade';
+  let gear = holder.children.find((o) => o.userData.gear);
+  if (gear?.userData.gear === want) return gear;
+  gear?.removeFromParent();
+  if (want === 'shield') {
+    gear = new THREE.Group();
+    gear.add(new THREE.Mesh(shieldDiscGeo, shieldMat), new THREE.Mesh(shieldRimGeo, shieldRimMat));
+    gear.position.z = -0.06; // just in front of the hand
+  } else {
+    gear = new THREE.Mesh(bladeGeo, bladeMat);
+  }
+  gear.userData.gear = want;
+  holder.add(gear);
+  return gear;
+}
+function equipHands() {
+  if (ctx.isViewer) {
+    for (const hand of ['left', 'right']) {
+      const cone = ctx.scene.getObjectByName(`viewer:hand-${hand}`);
+      if (cone) equip(cone, hand);
+    }
+  } else {
+    for (const controller of ctx.controllers) equip(controller, controller.userData.hand);
   }
 }
 
@@ -343,7 +368,7 @@ function update(state, dt, t) {
   if (age < 0) state.body.rotation.y += dt * 2;
   if (state.frameCount === 1) {
     state.body.visible = true;
-    ctx.sound?.('whoosh', state.body.position); // headset only; silent on viewers
+    ctx.sound?.(state.def.sound ?? 'whoosh', state.body.position); // its own sound if the model gave it one; headset only
   }
   spell.position.copy(state.body.position);
 
@@ -358,7 +383,7 @@ function update(state, dt, t) {
     } else if (age > state.flightTime + 0.6) {
       finish(state, 'shield');
     }
-  } else if (state.body.position.distanceTo(head) < 0.2 + state.size * 0.5) {
+  } else if (hitsPlayer(state)) {
     finish(state, 'hit');
     if (ctx.hit) ctx.hit(); // the page's shake, red flash and "Ouch!"
     else flashOpacity = 0.6;
@@ -368,13 +393,25 @@ function update(state, dt, t) {
   }
 }
 
-function finish(state, outcome) {
+// The player is a capsule from about knee height to the top of the head, scaled with them (2× in VR), so a spell
+// through the chest or shoulder counts, not only one at the eyes.
+const knee = new THREE.Vector3(), crown = new THREE.Vector3(), worldScale = new THREE.Vector3();
+function hitsPlayer(state) {
+  const s = ctx.rig.getWorldScale(worldScale).x;
+  knee.set(head.x, head.y - 1.2 * s, head.z);
+  crown.set(head.x, head.y + 0.1 * s, head.z);
+  return distanceToSegment(state.body.position, knee, crown) < 0.22 * s + state.size * 0.5;
+}
+
+// sound: what to play instead of the outcome's usual sound (a block is a "shield" too, but clangs).
+function finish(state, outcome, sound) {
   if (state.done) return;
   state.done = true;
   state.holder.visible = false;
   report({ type: 'outcome', spell_id: state.id, outcome });
   // Sliced: it shatters. Reached its target: a crack on the egg, or a thud on you. Flew past: a swish.
-  if (outcome === 'catch') ctx.sound?.('shatter', state.body.position);
+  if (sound) ctx.sound?.(sound, state.body.position);
+  else if (outcome === 'catch') ctx.sound?.('shatter', state.body.position);
   else if (outcome === 'hit') ctx.sound?.(state.egg ? 'crack' : 'thud', state.egg ? state.body.position : undefined);
   else ctx.sound?.('swish', state.body.position);
 }
@@ -404,7 +441,7 @@ const base = new THREE.Vector3(), tip = new THREE.Vector3(), tipVelocity = new T
 function checkBlades(dt) {
   for (const blade of blades) {
     const { controller } = blade;
-    if (!ctx.renderer.xr.isPresenting || !controller.visible) { blade.hasPrev = false; continue; }
+    if (!ctx.renderer.xr.isPresenting || !controller.visible || controller.userData.hand === 'left') { blade.hasPrev = false; continue; }
     controller.getWorldPosition(base);
     tip.set(0, 0, -BLADE_LENGTH).applyMatrix4(controller.matrixWorld);
     if (blade.hasPrev && dt > 0) {
@@ -423,6 +460,29 @@ function checkBlades(dt) {
     blade.hasPrev = true;
   }
 }
+// A spell touching the shield's disc (or passing through it since the last frame) is blocked.
+const shieldCenter = new THREE.Vector3(), shieldNormal = new THREE.Vector3(), toSpell = new THREE.Vector3();
+function checkShield() {
+  const left = ctx.controllers.find((c) => c.userData.hand === 'left');
+  const shield = left?.children.find((o) => o.userData.gear === 'shield');
+  if (!shield || !ctx.renderer.xr.isPresenting || !left.visible) return;
+  shield.getWorldPosition(shieldCenter);
+  shieldNormal.set(0, 0, 1).transformDirection(shield.matrixWorld);
+  const radius = SHIELD_RADIUS * shield.getWorldScale(worldScale).x;
+  for (const state of active.values()) {
+    if (state.done || !(state.age >= 0)) continue;
+    toSpell.subVectors(state.body.position, shieldCenter);
+    const depth = toSpell.dot(shieldNormal);
+    const across = Math.sqrt(Math.max(0, toSpell.lengthSq() - depth * depth));
+    const crossed = state.shieldDepth !== undefined && Math.sign(depth) !== Math.sign(state.shieldDepth);
+    state.shieldDepth = depth;
+    if (across < radius + state.size * 0.4 && (Math.abs(depth) < state.size * 0.5 + 0.05 || crossed)) {
+      finish(state, 'shield', 'block');
+      pulse('left', 0.8, 60);
+    }
+  }
+}
+
 function checkMouse() {
   if (ctx.renderer.xr.isPresenting || performance.now() - mouse.at > 50 || mouse.velocity.length() < MIN_MOUSE_SPEED) return;
   raycaster.setFromCamera(mouse.ndc, ctx.camera);
@@ -434,9 +494,9 @@ function checkMouse() {
 }
 
 ctx.onFrame((dt) => {
-  if (ctx.isViewer) {
-    addViewerBlades();
-  } else {
+  equipHands();
+  if (!ctx.isViewer) {
+    checkShield();
     checkBlades(dt);
     checkMouse();
   }
@@ -467,9 +527,9 @@ ctx.scene.add(anchor);
 ctx.onRemove(() => {
   anchor.removeFromParent();
   effects.removeFromParent();
-  const bladesInScene = [];
-  ctx.scene.traverse((o) => { if (o.geometry === bladeGeo) bladesInScene.push(o); });
-  bladesInScene.forEach((o) => o.removeFromParent());
+  const gearInScene = [];
+  ctx.scene.traverse((o) => { if (o.userData.gear) gearInScene.push(o); });
+  gearInScene.forEach((o) => o.removeFromParent());
   pieces.forEach((p) => p.material.dispose());
   [bladeGeo, bladeMat, pieceGeo, flash.geometry, flash.material].forEach((x) => x.dispose());
 });

@@ -288,6 +288,15 @@ class LLMForge:
             spell["target"] = answer["target"]  # used when the catalog's targeting mode is "harness"
         if answer.get("flavor"):
             spell["flavor"] = " ".join(str(answer["flavor"]).split())[:160]
+        sound = answer.get("sound")
+        if isinstance(sound, dict) and sound.get("base") in SOUND_BASES:
+            spell["sound"] = {  # the headset synthesizes it when the spell appears (see "Sound" in index.html)
+                "base": sound["base"],
+                "pitch": round(clamp(sound.get("pitch"), 0.5, 2, 1), 2),
+                "wobble": round(clamp(sound.get("wobble"), 0, 1, 0), 2),
+                "sparkle": bool(sound.get("sparkle")),
+                "length": round(clamp(sound.get("length"), 0.3, 1.5, 0.6), 2),
+            }
         _, error = validate_spell(spell, catalog)
         if error:
             raise ForgeError(error)
@@ -320,6 +329,11 @@ def parse_params(text):
     except ValueError:
         return {}
     return value if isinstance(value, dict) else {}
+
+
+# The sounds a spell can ask for (its "sound" recipe): the same list as the schema in tools/forge_spell.md and the
+# synthesizer in index.html.
+SOUND_BASES = ("whoosh", "buzz", "chime", "rumble", "zap", "boing", "honk", "sizzle")
 
 
 def clamp(value, lo, hi, default):

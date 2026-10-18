@@ -19,6 +19,7 @@ Your answer is one JSON object, the spell:
 | `power` | 1-3: charge when caught. More complex and rarer spells are worth more. |
 | `target` | `"egg"` or `"user"`: what it flies at. The egg is the thing the player guards; the user is the player in the headset, and a hit costs them health. Choose what the request asks for. If it does not say, choose what fits: heavy, slow or destructive spells at the egg; quick, sneaky or mischievous spells at the user. |
 | `behaviors` | 0-3 library behaviors: `{"id": "...", "params_json": "{...}"}`. Use `"{}"` for the defaults. |
+| `sound` | The sound it makes when it appears, played in the headset: `base` (`whoosh` thrown, `buzz` insects or engines, `chime` bells and magic, `rumble` heavy and earthy, `zap` electric, `boing` springy or silly, `honk` comic animals and horns, `sizzle` fire and fizz), `pitch` (0.5 deep and big to 2 tiny and squeaky; 1 normal), `wobble` (0 steady to 1 warbling), `sparkle` (true adds twinkles, for magic), `length` (0.3-1.5 s). Match the thing and its mood. |
 
 ```json
 {
@@ -44,9 +45,21 @@ Your answer is one JSON object, the spell:
         "required": ["id", "params_json"],
         "additionalProperties": false
       }
+    },
+    "sound": {
+      "type": "object",
+      "properties": {
+        "base": {"type": "string", "enum": ["whoosh", "buzz", "chime", "rumble", "zap", "boing", "honk", "sizzle"]},
+        "pitch": {"type": "number"},
+        "wobble": {"type": "number"},
+        "sparkle": {"type": "boolean"},
+        "length": {"type": "number"}
+      },
+      "required": ["base", "pitch", "wobble", "sparkle", "length"],
+      "additionalProperties": false
     }
   },
-  "required": ["name", "incantation", "object", "color", "size", "glow", "motion", "speed", "power", "target", "behaviors"],
+  "required": ["name", "incantation", "object", "color", "size", "glow", "motion", "speed", "power", "target", "behaviors", "sound"],
   "additionalProperties": false
 }
 ```

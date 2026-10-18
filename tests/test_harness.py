@@ -214,6 +214,12 @@ def worker_model(name):
 
 
 class ForgeTest(HarnessTest):
+    def test_sound_recipe_is_clamped(self):
+        self.answer_with(lambda r: spell_answer(sound={"base": "honk", "pitch": 9, "wobble": -1, "sparkle": 1, "length": "x"}))
+        request = self.wait(self.cast(ing("asset", "fireball"), text("that honks")))
+        self.assertEqual(request.status, Status.READY)
+        self.assertEqual(request.spell["sound"], {"base": "honk", "pitch": 2, "wobble": 0, "sparkle": True, "length": 0.6})
+
     def test_remix_uses_adapt_and_fast_model(self):
         self.answer_with(lambda r: spell_answer())
         request = self.wait(self.cast(ing("asset", "fireball"), text("that splits into three")))

@@ -30,7 +30,7 @@
     <div id="status">Loading scene…</div>
     <div id="sync">Live sync: connecting…</div>
     <div class="headset-only">Desktop: drag to look · WASD/arrows to move (Shift to sprint) · Space to jump · hold C by a ledge to climb</div>
-    <div class="headset-only">VR: left stick to move (hold left trigger to sprint) · right stick to snap-turn · A to jump · hold left grip by a ledge to climb</div>
+    <div class="headset-only">VR: left hand shield, right hand blade · left stick to move (hold left trigger to sprint) · right stick to snap-turn · A to jump · hold left grip by a ledge to climb</div>
     <div class="viewer-only" id="headset-status">Headset: waiting for it to connect</div>
     <div class="viewer-only dim" id="recent-edits"></div>
     <div class="viewer-only">Drag to orbit · scroll to zoom · <a href="#" id="view-toggle">V: headset's view</a></div>
@@ -391,6 +391,13 @@
           tone(d, t + 0.01, { wave: 'sine', from: 1850, peak: 0.22, decay: 0.7 });
           tone(d, t + 0.01, { wave: 'sine', from: 2790, peak: 0.12, decay: 0.5 });
         },
+        // Your shield blocks it: a metallic clang.
+        block: (d, t) => {
+          hiss(d, t, { from: 2600, to: 1200, q: 2, peak: 0.5, attack: 0.002, decay: 0.08 });
+          tone(d, t, { from: 523, peak: 0.3, decay: 0.55 });
+          tone(d, t, { from: 1329, peak: 0.16, decay: 0.4 });
+          tone(d, t, { from: 2210, peak: 0.08, decay: 0.25 });
+        },
         // It flies past you: a softer, falling whoosh.
         swish: (d, t) => hiss(d, t, { from: 1800, to: 400, q: 1.5, peak: 0.25, attack: 0.05, decay: 0.35 }),
         // The egg breaks: two cracks, a low boom, a shower of pieces and a sad sliding note.
@@ -404,8 +411,59 @@
         },
       };
 
+      // A spell's own sound, chosen by the model that made it (see `sound` in harness/tools/forge_spell.md):
+      // { base, pitch 0.5-2, wobble 0-1, sparkle, length 0.3-1.5 s }. Clamped again here, since it's model output.
+      const between = (v, lo, hi, fallback) => (Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : fallback);
+      function voice(dest, at, { wave, length, freq, peak }) {
+        // An oscillator whose frequency follows freq(seconds) over its length.
+        const curve = new Float32Array(64).map((_, i) => freq((i / 63) * length));
+        const osc = new OscillatorNode(ac, { type: wave });
+        osc.frequency.setValueCurveAtTime(curve, at, length);
+        const gain = ac.createGain();
+        envelope(gain, at, peak, 0.01, length - 0.01);
+        osc.connect(gain).connect(dest);
+        osc.start(at);
+        osc.stop(at + length + 0.05);
+      }
+      function custom(d, t, r) {
+        const p = between(r.pitch, 0.5, 2, 1), w = between(r.wobble, 0, 1, 0), L = between(r.length, 0.3, 1.5, 0.6);
+        const warble = (hz, rate = 7) => (s) => hz * p * (1 + w * 0.35 * Math.sin(2 * Math.PI * rate * s));
+        switch (r.base) {
+          case 'buzz':
+            voice(d, t, { wave: 'sawtooth', length: L, freq: warble(120, 9), peak: 0.16 });
+            break;
+          case 'chime':
+            [1, 1.5, 2.76].forEach((m, i) => tone(d, t + i * 0.03, { from: 660 * p * m, peak: 0.2 / (i + 1), decay: L }));
+            break;
+          case 'rumble':
+            voice(d, t, { wave: 'sine', length: L, freq: warble(60, 3), peak: 0.7 });
+            hiss(d, t, { type: 'lowpass', from: 400 * p, to: 120 * p, peak: 0.4, attack: 0.05, decay: L });
+            break;
+          case 'zap':
+            tone(d, t, { wave: 'square', from: 1400 * p, to: 180 * p, peak: 0.12, decay: Math.min(L, 0.4) });
+            hiss(d, t, { type: 'highpass', from: 4000, to: 2000, peak: 0.2, attack: 0.002, decay: 0.08 });
+            break;
+          case 'boing': // a spring: fast pitch swings that die away
+            voice(d, t, { wave: 'sine', length: L, peak: 0.5,
+              freq: (s) => 200 * p * (1 + (0.4 + w * 0.4) * Math.sin(2 * Math.PI * 11 * s) * Math.exp(-4 * s)) });
+            break;
+          case 'honk':
+            for (const delay of [0, 0.18]) voice(d, t + delay, { wave: 'sawtooth', length: 0.15, freq: warble(280, 25), peak: 0.15 });
+            break;
+          case 'sizzle':
+            hiss(d, t, { type: 'highpass', from: 5000 * p, to: 2500 * p, peak: 0.35, attack: 0.05, decay: L });
+            break;
+          default: // whoosh
+            hiss(d, t, { from: 300 * p, to: 2400 * p, q: 1.2 + w * 4, peak: 0.6, attack: L * 0.4, decay: L * 0.6 });
+            tone(d, t, { from: 140 * p, to: 60 * p, peak: 0.25, decay: 0.15 });
+        }
+        if (r.sparkle) pings(d, t + 0.05, 5, L, 0.08);
+      }
+
+      // name: one of the recipes above, or a spell's own sound (an object, see custom()).
       function play(name, position) {
-        if (ac.state !== 'running' || !recipes[name]) return;
+        const own = name && typeof name === 'object';
+        if (ac.state !== 'running' || (!own && !recipes[name])) return;
         let dest = out;
         if (position) {
           dest = new PannerNode(ac, { panningModel: 'HRTF', distanceModel: 'inverse', refDistance: 2,
@@ -413,7 +471,8 @@
           dest.connect(out);
           setTimeout(() => dest.disconnect(), 3000);
         }
-        recipes[name](dest, ac.currentTime + 0.01);
+        if (own) custom(dest, ac.currentTime + 0.01, name);
+        else recipes[name](dest, ac.currentTime + 0.01);
       }
 
       // Music: one quiet loop, from the first click on.
@@ -1442,7 +1501,8 @@
     //   ctx.load(url)            load a glTF/GLB: resolves to { scene, animations, … }
     //   ctx.import(path)         load a three.js addon, e.g. await ctx.import('geometries/TextGeometry.js')
     //   ctx.head                 the user's head, on any page (the camera looks down its -Z)
-    //   ctx.sound(name, position?) a sound on the headset (whoosh, shatter, thud, crack, swish, eggBreak); silent elsewhere
+    //   ctx.sound(name, position?) a sound on the headset (whoosh, shatter, thud, crack, block, swish, eggBreak, or a spell's
+    //                            { base, pitch, wobble, sparkle, length } recipe); silent elsewhere
     //   ctx.egg()                the egg the player guards: an Object3D at its center, with userData.box (world space)
     //   ctx.isViewer             true on viewers: patches run there too, for looks, but the headset's state wins, so
     //                            skip side effects there (like adding objects or sending edits)
