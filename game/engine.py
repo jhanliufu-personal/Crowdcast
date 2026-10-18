@@ -11,17 +11,18 @@ Two acknowledgements, one per hand-off: a forge acks "the spell is built" (forge
 headset acks "the spell is in the scene" (report("spawned")). Until then the request stays where
 it was: in the queue, or sent again to a headset that reconnects.
 
-The server owns the session (members, teams, scores, queue). The headset owns the simulation and
+The server owns the session (members, scores, queue). Everyone in the audience plays for themselves. The headset owns the simulation and
 reports what happened to each spell (hit / catch / shield / return); the engine scores it.
 """
 
+import colorsys
 import logging
 import math
 import random
 import secrets
 import threading
 import time
-from collections import Counter, deque
+from collections import deque
 from dataclasses import dataclass, field
 
 from .catalog import TARGETS
@@ -31,13 +32,13 @@ from .spell_request import PENDING, Recipe, SpellRequest, Status, Tier, validate
 
 log = logging.getLogger(__name__)
 
-TEAMS = (
-    {"id": "ember", "name": "Ember", "color": "#c8102e"},
-    {"id": "tide", "name": "Tide", "color": "#1f5fd6"},
-    {"id": "thorn", "name": "Thorn", "color": "#2e8b3e"},
-    {"id": "gale", "name": "Gale", "color": "#e0b100"},
-)
-TEAM_BY_ID = {t["id"]: t for t in TEAMS}
+
+
+def member_color(index):
+    """A distinct color per audience member: hues a golden angle apart, so neighbours in join order differ."""
+    r, g, b = colorsys.hls_to_rgb((index * 0.381966) % 1.0, 0.55, 0.75)
+    return f"#{round(r * 255):02x}{round(g * 255):02x}{round(b * 255):02x}"
+
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,7 @@ LEASE_SECONDS = {Tier.PRESET: 5, Tier.REMIX: 20, Tier.NOVEL: 60}  # a forge clai
 MAX_ATTEMPTS = 2  # forge claims per request before it fails
 HIT_POINTS = 10
 RETURN_PENALTY = 5
+LEADERBOARD = 5  # top scorers in the game state
 STATE_EVERY_S = 1.0
 HISTORY = 10  # requests shown per member
 
@@ -75,13 +77,14 @@ class Member:
     id: str
     token: str
     name: str
-    team: str
+    color: str
+    score: int = 0
     last_cast_at: float = None
     request_ids: list = field(default_factory=list)
     joined_at: float = field(default_factory=time.time)
 
     def to_public(self):
-        return {"id": self.id, "name": self.name, "team": self.team, "color": TEAM_BY_ID[self.team]["color"]}
+        return {"id": self.id, "name": self.name, "color": self.color}
 
 
 def act_at(elapsed):
@@ -116,7 +119,8 @@ class GameEngine:
         self.charge = 0
         self.player_hp = float(self.catalog.player["max_hp"])  # the player in the headset
         self._healed_at = None
-        self.scores = {t["id"]: 0 for t in TEAMS}
+        for member in self.members.values():
+            member.score = 0
         self.ready = deque()  # resolved spells waiting for room in the sky
         self.in_flight = {}   # id -> request, SENT to the headset or CAST into the scene
         self.orbs = []        # caught spells the player can return
@@ -152,11 +156,8 @@ class GameEngine:
         if not name:
             raise GameError("Pick a name first.")
         with self._lock:
-            # The enchanted mirror: put them on the smallest team.
-            sizes = Counter(m.team for m in self.members.values())
-            fewest = min(sizes[t["id"]] for t in TEAMS)
-            team = random.choice([t["id"] for t in TEAMS if sizes[t["id"]] == fewest])
-            member = Member(id=f"a{secrets.token_hex(3)}", token=secrets.token_urlsafe(16), name=name, team=team)
+            member = Member(id=f"a{secrets.token_hex(3)}", token=secrets.token_urlsafe(16), name=name,
+                            color=member_color(len(self.members)))
             self.members[member.id] = member
             self._by_token[member.token] = member
             self._publish_state(force=True)
@@ -251,7 +252,7 @@ class GameEngine:
                     raise GameError(f"Spell {spell_id} isn't in flight.", 404)
                 self._set_status(request, status)
                 if status is Status.HIT:
-                    self.scores[self.members[request.member_id].team] += HIT_POINTS
+                    self.members[request.member_id].score += HIT_POINTS
                     if request.spell.get("target") == "user":
                         damage = self.catalog.player["damage_per_power"] * max(1, request.spell.get("power", 1))
                         self.player_hp = max(0.0, self.player_hp - damage)
@@ -274,7 +275,7 @@ class GameEngine:
         if target is None:
             raise GameError(f"No audience member {target_member_id}.", 404)
         self.orbs.remove(orb)
-        self.scores[target.team] -= RETURN_PENALTY
+        target.score -= RETURN_PENALTY
         self.hub.publish(
             "audience:buzz",
             {"spell": orb.spell["name"], "incantation": orb.spell["incantation"], "penalty": RETURN_PENALTY},
@@ -416,15 +417,16 @@ class GameEngine:
         self.outcome = outcome
         caught = [{"name": r.spell["name"], "caster": r.spell["caster"]["name"]} for r in self.orbs]
         self._clear_spells()
-        best = max(self.scores.values())
+        scores = self._scores()
+        best = max(scores.values(), default=0)
         self.hub.publish(
             "game:over",
             {
                 "outcome": outcome,
                 "charge": self.charge,
                 "caught": caught,
-                "scores": self.scores,
-                "winners": [t for t, s in self.scores.items() if s == best],
+                "scores": scores,
+                "winners": [m for m, s in scores.items() if s == best and best > 0],
                 # TODO: the hatched creature is designed by the LLM from the caught spells.
             },
         )
@@ -445,8 +447,8 @@ class GameEngine:
                 "player": {"hp": round(self.player_hp, 1), "max_hp": self.catalog.player["max_hp"]},
                 "targeting": self.catalog.targeting["mode"],
                 "charge": self.charge,
-                "scores": self.scores,
-                "teams": TEAMS,
+                "scores": self._scores(),  # member id -> score
+                "leaderboard": [{**m.to_public(), "score": m.score} for m in self._leaderboard()[:LEADERBOARD]],
                 "queue": self.queue.counts(),
                 "forging": self.queue.claimed_count(set(Tier)),
                 "ready": len(self.ready),
@@ -456,6 +458,12 @@ class GameEngine:
                 "forge_online": getattr(self.llm_forge, "online", True),
                 "cooldown_s": COOLDOWN_S,
             }
+
+    def _scores(self):
+        return {m.id: m.score for m in self.members.values()}
+
+    def _leaderboard(self):
+        return sorted(self.members.values(), key=lambda m: (-m.score, m.joined_at))
 
     def mark_host_dirty(self):
         """Something in the host view changed; the tick loop publishes it within 0.25 s."""
@@ -479,6 +487,7 @@ class GameEngine:
                     **m.to_public(),
                     "online": m.id in online,
                     "joined_at": m.joined_at,
+                    "score": m.score,
                     "casts": len(mine),
                     "hits": sum(r.status is Status.HIT for r in mine),
                     "latest": mine[-1].to_public() if mine else None,

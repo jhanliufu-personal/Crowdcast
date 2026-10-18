@@ -9,7 +9,7 @@
     :root {
       --bg: #14122b; --panel: #1f1c3d; --panel-2: #2a2650; --line: #3b3670;
       --text: #ecebff; --muted: #a29fd0; --accent: #ffcf5a; --danger: #ff7a7a; --ok: #6be3a0;
-      --team: #8a7cff;
+      --me: #8a7cff; /* this player's color, set from the server */
       --chip-spell: #5b3fa8; --chip-asset: #8a4b1c; --chip-motion: #1d5f7a;
       --radius: 12px;
     }
@@ -25,75 +25,99 @@
     .card { background: var(--panel); border-radius: var(--radius); padding: 14px; }
 
     /* Join */
-    #join { text-align: center; padding-top: 12vh; }
-    #join .egg { font-size: 64px; }
-    #join form { display: flex; gap: 8px; margin-top: 20px; }
-    #join input { flex: 1; min-width: 0; padding: 12px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--panel); }
-    .primary { background: var(--accent); color: #241a00; font-weight: 700; padding: 12px 16px; border-radius: var(--radius); }
+    #join { text-align: center; padding-top: 14vh; }
+    #join .egg { font-size: 96px; line-height: 1.1; }
+    #join h1 { font-size: 28px; }
+    #join form { display: grid; gap: 12px; margin-top: 28px; }
+    #join input { padding: 16px; font-size: 20px; text-align: center; border-radius: var(--radius); border: 1px solid var(--line); background: var(--panel); }
+    .primary { background: var(--accent); color: #241a00; font-weight: 800; font-size: 20px; padding: 16px; border-radius: var(--radius); }
     .primary:disabled { opacity: 0.45; cursor: default; }
 
-    /* Sorting */
+    /* Welcome (after entering a name) */
     #sorting { position: fixed; inset: 0; display: grid; place-items: center; background: var(--bg); z-index: 10; text-align: center; padding: 16px; }
-    #sorting .team { font-size: 40px; font-weight: 800; color: var(--team); animation: reveal 1.2s ease-out both 0.6s; }
+    #sorting .who { font-size: 48px; font-weight: 800; color: var(--me); overflow-wrap: anywhere; animation: reveal 1.2s ease-out both 0.6s; }
     @keyframes reveal { from { opacity: 0; transform: scale(0.6); } to { opacity: 1; transform: none; } }
 
     /* Status bar */
-    #bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-    .badge { background: var(--team); color: #fff; padding: 3px 10px; border-radius: 999px; font-weight: 700; font-size: 14px; }
-    #phase { font-weight: 600; }
-    #clock { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 700; }
-    #cracks { display: flex; gap: 3px; align-items: center; font-size: 13px; }
-    #cracks i { width: 10px; height: 14px; border-radius: 50% 50% 45% 45%; background: #e8e2c8; display: inline-block; }
+    #bar { display: flex; align-items: center; gap: 10px; }
+    .badge { background: var(--me); color: #fff; padding: 6px 14px; border-radius: 999px; font-weight: 800; font-size: 16px; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #clock { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 800; font-size: 28px; }
+    #clock.phase { font-size: 18px; color: var(--muted); font-weight: 700; }
+    #cracks { display: flex; gap: 6px; align-items: center; margin-top: 12px; }
+    #cracks i { width: 20px; height: 26px; border-radius: 50% 50% 45% 45%; background: #e8e2c8; display: inline-block; }
     #cracks i.cracked { background: var(--danger); }
-    #scores { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
-    #scores span { font-size: 13px; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); border-left: 4px solid; }
-    #scores span.mine { outline: 1px solid var(--muted); }
-    #banner { margin-top: 10px; padding: 10px 12px; border-radius: var(--radius); background: var(--panel-2); font-weight: 600; }
+    #score { margin-left: auto; font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+    #score small { font-size: 15px; color: var(--muted); margin-left: 6px; }
+    #banner { margin-top: 12px; padding: 12px; border-radius: var(--radius); background: var(--panel-2); font-weight: 700; font-size: 18px; text-align: center; }
 
     /* Composer */
     #composer {
-      display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 52px;
-      padding: 8px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--bg);
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-height: 64px;
+      padding: 10px; border-radius: var(--radius); border: 2px solid var(--line); background: var(--bg);
     }
     #composer:focus-within { border-color: var(--accent); }
-    #draft { flex: 1; min-width: 140px; border: 0; background: transparent; padding: 6px 4px; outline: none; }
-    .chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 4px 4px 10px; border-radius: 999px; font-size: 14px; color: #fff; }
+    #draft { flex: 1; min-width: 140px; border: 0; background: transparent; padding: 8px 4px; outline: none; font-size: 18px; }
+    .chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 6px 6px 12px; border-radius: 999px; font-size: 17px; font-weight: 600; color: #fff; }
+    .chip .emoji { font-size: 24px; line-height: 1; }
     .chip.spell { background: var(--chip-spell); }
     .chip.asset { background: var(--chip-asset); }
     .chip.motion { background: var(--chip-motion); }
     .chip.text { background: transparent; color: var(--text); padding-left: 2px; }
-    .chip .x { background: rgba(0, 0, 0, 0.25); width: 22px; height: 22px; border-radius: 50%; font-size: 13px; line-height: 22px; text-align: center; }
+    .chip .x { background: rgba(0, 0, 0, 0.25); width: 30px; height: 30px; border-radius: 50%; font-size: 16px; line-height: 30px; text-align: center; }
     .chip.text .x { background: var(--panel-2); }
-    #tier { margin: 8px 2px 0; font-size: 14px; min-height: 20px; }
-    #tier.preset b { color: var(--ok); }
-    #tier.remix b { color: var(--accent); }
-    #tier.novel b { color: #c99bff; }
-    #tier.invalid { color: var(--muted); }
-    #cast-row { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
-    #cast { flex: 1; }
-    #clear { background: var(--panel-2); padding: 12px 14px; border-radius: var(--radius); }
-    #cast-error { color: var(--danger); font-size: 14px; margin-top: 8px; min-height: 0; }
+    #tier { margin: 10px 2px 0; font-size: 17px; font-weight: 700; }
+    #tier:empty { display: none; }
+    #tier.preset { color: var(--ok); }
+    #tier.remix { color: var(--accent); }
+    #tier.novel { color: #c99bff; }
+    #tier.invalid { color: var(--muted); font-weight: 500; }
+    #cast-row { display: grid; grid-template-columns: 64px 1fr; gap: 10px; margin-top: 12px; }
+    #cast { font-size: 24px; padding: 18px; }
+    #clear { background: var(--panel-2); border-radius: var(--radius); font-size: 22px; }
+    #cast-error { color: var(--danger); font-size: 16px; margin-top: 8px; }
 
-    /* Palette */
-    .palette { display: flex; flex-wrap: wrap; gap: 8px; }
-    .block { padding: 9px 12px; border-radius: var(--radius); font-size: 15px; background: var(--panel-2); border: 1px solid var(--line); text-align: left; }
-    .block:active { transform: scale(0.97); }
+    /* Tabs */
+    #tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin: 16px 0 14px; padding: 4px; border-radius: 16px; background: var(--panel); }
+    #tabs button { padding: 14px 8px; border-radius: 12px; font-size: 18px; font-weight: 800; color: var(--muted); background: transparent; }
+    #tabs button[aria-selected="true"] { background: var(--panel-2); color: var(--text); box-shadow: inset 0 -3px 0 var(--accent); }
+
+    #how { margin: 0 2px 10px; font-size: 16px; color: var(--muted); text-align: center; }
+
+    /* Prebuilt: one tap casts */
+    #palette-spell .block { padding: 22px 8px; font-size: 18px; }
+    #palette-spell .block .emoji { font-size: 56px; }
+    #palette-spell .block:disabled { opacity: 0.4; }
+    #palette-spell .block.sent { animation: sent 0.6s ease-out; }
+    @keyframes sent { 30% { transform: scale(1.08); border-color: var(--accent); } }
+    #quick-status { margin-top: 12px; text-align: center; font-size: 22px; font-weight: 800; color: var(--accent); min-height: 30px; }
+    #quick-status.error { color: var(--danger); font-size: 16px; }
+
+    /* Palette: two columns of big tiles */
+    .palette { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .block {
+      display: grid; justify-items: center; gap: 6px; padding: 14px 8px; border-radius: 16px;
+      background: var(--panel-2); border: 2px solid var(--line); font-size: 17px; font-weight: 700; text-align: center;
+      transition: transform 0.08s;
+    }
+    .block:active { transform: scale(0.95); }
+    .block .emoji { font-size: 44px; line-height: 1; position: relative; }
+    .block .emoji sub { position: absolute; right: -18px; bottom: -6px; font-size: 24px; }
     .block.spell { border-color: var(--chip-spell); }
     .block.asset { border-color: var(--chip-asset); }
     .block.motion { border-color: var(--chip-motion); }
-    .block small { display: block; color: var(--muted); font-size: 12px; }
 
     /* My spells */
     #mine { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-    #mine li { background: var(--panel); border-radius: var(--radius); padding: 10px 12px; display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; }
-    #mine .what { font-size: 14px; overflow-wrap: anywhere; }
-    #mine .name { font-size: 13px; color: var(--muted); grid-column: 1; }
-    #mine .status { grid-row: 1 / span 2; grid-column: 2; align-self: center; font-size: 13px; font-weight: 700; padding: 3px 10px; border-radius: 999px; background: var(--panel-2); white-space: nowrap; }
+    #mine li { background: var(--panel); border-radius: var(--radius); padding: 10px 12px; display: flex; align-items: center; gap: 12px; }
+    #mine .what { font-size: 30px; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+    #mine .what small { display: block; font-size: 14px; font-weight: 600; color: var(--muted); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; }
+    #mine .status { font-size: 16px; font-weight: 800; padding: 6px 12px; border-radius: 999px; background: var(--panel-2); white-space: nowrap; }
     .status.hit { color: var(--ok); } .status.caught, .status.shielded { color: var(--accent); }
     .status.failed, .status.expired, .status.fizzled { color: var(--muted); }
 
     /* Buzz */
-    #buzz { position: fixed; inset: 0; display: grid; place-items: center; text-align: center; padding: 16px; background: var(--team); color: #fff; font-size: 24px; font-weight: 800; z-index: 20; animation: flash 0.25s steps(2) 4; }
+    #buzz { position: fixed; inset: 0; display: grid; place-items: center; text-align: center; padding: 16px; background: var(--me); color: #fff; font-size: 34px; font-weight: 800; z-index: 20; animation: flash 0.25s steps(2) 4; }
+    #buzz big { display: block; font-size: 96px; }
     @keyframes flash { 50% { filter: brightness(1.8); } }
   </style>
 </head>
@@ -101,18 +125,17 @@
   <section id="join" class="hidden">
     <div class="egg">🥚</div>
     <h1>The Midnight Egg</h1>
-    <p class="muted">The wizard must guard the egg until midnight. You decide what flies at it.</p>
     <form id="join-form">
       <input id="join-name" maxlength="20" autocomplete="nickname" placeholder="Your name" required />
-      <button class="primary">Enter</button>
+      <button class="primary">Join</button>
     </form>
     <p id="join-error" class="muted"></p>
   </section>
 
   <div id="sorting" class="hidden">
     <div>
-      <div class="muted">The enchanted mirror says…</div>
-      <div class="team" id="sorting-team"></div>
+      <div class="muted">The mirror sees…</div>
+      <div class="who" id="sorting-name"></div>
     </div>
   </div>
 
@@ -120,36 +143,43 @@
     <div class="card">
       <div id="bar">
         <span class="badge" id="me-badge"></span>
-        <span id="phase"></span>
         <span id="clock"></span>
       </div>
-      <div id="cracks" style="margin-top:8px"></div>
-      <div id="scores"></div>
+      <div id="cracks"></div>
       <div id="banner" class="hidden"></div>
     </div>
 
-    <h2>Compose a spell</h2>
-    <div class="card">
-      <div id="composer">
-        <input id="draft" maxlength="120" autocomplete="off" enterkeyhint="send" placeholder="Tap blocks below, or describe a spell…" />
-      </div>
-      <div id="tier"></div>
-      <div id="cast-row">
-        <button id="clear" type="button">Clear</button>
-        <button id="cast" class="primary" type="button">Cast</button>
-      </div>
-      <div id="cast-error"></div>
+    <div id="tabs" role="tablist">
+      <button type="button" role="tab" data-tab="prebuilt">⚡ Prebuilt</button>
+      <button type="button" role="tab" data-tab="custom">✨ Custom</button>
     </div>
 
-    <h2>Ready-made spells</h2>
-    <div class="palette" id="palette-spell"></div>
-    <h2>Things to throw</h2>
-    <div class="palette" id="palette-asset"></div>
-    <h2>Ways to fly</h2>
-    <div class="palette" id="palette-motion"></div>
+    <section id="tab-prebuilt" role="tabpanel">
+      <div class="palette" id="palette-spell"></div>
+      <div id="quick-status"></div>
+    </section>
 
-    <h2>Your spells</h2>
-    <ul id="mine"><li class="muted">Nothing cast yet.</li></ul>
+    <section id="tab-custom" role="tabpanel" class="hidden">
+      <p id="how">Pick a thing + a move, or type an idea.</p>
+      <div class="card">
+        <div id="composer">
+          <input id="draft" maxlength="120" autocomplete="off" enterkeyhint="send" placeholder="Tap below or type…" />
+        </div>
+        <div id="tier"></div>
+        <div id="cast-row">
+          <button id="clear" type="button" aria-label="Clear">✕</button>
+          <button id="cast" class="primary" type="button">Cast</button>
+        </div>
+        <div id="cast-error"></div>
+      </div>
+      <h2>Things</h2>
+      <div class="palette" id="palette-asset"></div>
+      <h2>Moves</h2>
+      <div class="palette" id="palette-motion"></div>
+    </section>
+
+    <h2>Sent</h2>
+    <ul id="mine"><li class="muted">Nothing yet.</li></ul>
   </main>
 
   <div id="buzz" class="hidden"></div>
@@ -158,16 +188,12 @@
     const $ = (sel) => document.querySelector(sel);
     const MAX_TEXT = 120;
     const KINDS = ['spell', 'asset', 'motion'];
-    const TIERS = {
-      preset: ['⚡ Instant', 'everything already exists, so it flies right away'],
-      remix: ['✨ Remix', 'the forge makes a small change, so it is quick'],
-      novel: ['🔮 New spell', 'the forge invents it from scratch, so it takes longest'],
-    };
+    const TIERS = { preset: '⚡ Instant', remix: '✨ Remix', novel: '🔮 Brand new' };
     const STATUS = {
-      queued: 'In line', forging: 'Brewing…', ready: 'Ready', sent: 'Flying out…', cast: 'In the sky!', hit: 'Hit! 💥',
-      caught: 'Caught', shielded: 'Shielded', fizzled: 'Fizzled', failed: 'Failed', expired: 'Expired',
+      queued: '⏳', forging: '🫕 Brewing', ready: '✅ Ready', sent: '🚀 Flying', cast: '✨ In the sky', hit: '💥 Hit!',
+      caught: '🧤 Caught', shielded: '🛡️ Blocked', fizzled: '💨 Fizzled', failed: '❌ Failed', expired: '⌛ Expired',
     };
-    const PHASES = { lobby: 'Waiting for the round', dusk: 'Dusk', storm: 'Storm', midnight: 'Midnight!', over: 'Round over' };
+    const PHASES = { lobby: 'Not started', over: 'Over' };
 
     // Per-viewer conveniences only; the server is the source of truth.
     const store = {
@@ -211,14 +237,27 @@
       return { emoji: b.emoji, label: b.label };
     }
 
+    const emojiSpan = (emoji) => el('span', { className: 'emoji', textContent: emoji });
+
+    function showTab(name) {
+      for (const tab of document.querySelectorAll('#tabs [data-tab]')) {
+        const on = tab.dataset.tab === name;
+        tab.setAttribute('aria-selected', on);
+        $('#tab-' + tab.dataset.tab).classList.toggle('hidden', !on);
+      }
+      store.set('midnight-egg-tab', name);
+    }
+    for (const tab of document.querySelectorAll('#tabs [data-tab]')) tab.addEventListener('click', () => showTab(tab.dataset.tab));
+    showTab(store.get('midnight-egg-tab') === 'custom' ? 'custom' : 'prebuilt');
+
     // ---- views -------------------------------------------------------------------------------
 
     function show(id) {
       for (const v of ['join', 'main']) $('#' + v).classList.toggle('hidden', v !== id);
     }
 
-    function setTeamColor(color) {
-      document.documentElement.style.setProperty('--team', color);
+    function setMyColor(color) {
+      document.documentElement.style.setProperty('--me', color);
     }
 
     // ---- join --------------------------------------------------------------------------------
@@ -231,8 +270,7 @@
         token = data.token;
         store.set('midnight-egg-token', token);
         applyMe(data);
-        setTeamColor(data.member.color);
-        $('#sorting-team').textContent = data.member.team.toUpperCase();
+        $('#sorting-name').textContent = data.member.name;
         $('#sorting').classList.remove('hidden');
         setTimeout(() => $('#sorting').classList.add('hidden'), 2600);
         enterMain();
@@ -278,8 +316,8 @@
 
     function applyMe(data) {
       me = data.member;
-      setTeamColor(me.color);
-      $('#me-badge').textContent = `${me.name} · ${me.team}`;
+      setMyColor(me.color);
+      $('#me-badge').textContent = me.name;
       for (const r of data.requests) requests.set(r.id, r);
       cooldownUntil = Date.now() + data.cooldown_s * 1000;
       renderMine();
@@ -288,27 +326,21 @@
 
     function renderState() {
       if (!state) return;
-      $('#phase').textContent = PHASES[state.phase] ?? state.phase;
       const s = Math.max(0, Math.ceil(state.remaining_s));
-      $('#clock').textContent = state.phase === 'lobby' || state.phase === 'over' ? '' : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} to midnight`;
+      const clock = $('#clock');
+      const idle = state.phase in PHASES;
+      clock.className = idle ? 'phase' : '';
+      clock.textContent = idle ? PHASES[state.phase] : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+      const mine = state.scores[me?.id] ?? 0;
+      const rank = 1 + Object.values(state.scores).filter((v) => v > mine).length;
+      const score = el('div', { id: 'score' }, `⭐ ${mine}`, el('small', { textContent: `#${rank}` }));
       $('#cracks').replaceChildren(
-        el('span', { className: 'muted', textContent: 'Egg ' }),
         ...Array.from({ length: state.max_cracks }, (_, i) => el('i', { className: i < state.cracks ? 'cracked' : '' })),
-        el('span', { className: 'muted', textContent: ` · charge ${state.charge}` }),
+        score,
       );
-      $('#scores').replaceChildren(...state.teams.map((t) => {
-        const span = el('span', { textContent: `${t.name} ${state.scores[t.id]}`, className: t.id === me?.team ? 'mine' : '' });
-        span.style.borderLeftColor = t.color;
-        return span;
-      }));
       const banner = $('#banner');
-      if (state.phase === 'over') {
-        const best = Math.max(...Object.values(state.scores));
-        const top = state.teams.filter((t) => state.scores[t.id] === best).map((t) => t.name).join(' & ');
-        banner.textContent = (state.outcome === 'hatched' ? '🐣 The egg survived until midnight and hatched!' : '💥 The egg broke open early!') + ` Top team: ${top}.`;
-      } else if (state.phase === 'lobby') {
-        banner.textContent = 'The round hasn’t started. Spells you cast now wait for dusk.';
-      }
+      if (state.phase === 'over') banner.textContent = state.outcome === 'hatched' ? '🐣 It hatched!' : '💥 The egg broke!';
+      else if (state.phase === 'lobby') banner.textContent = '⏳ Starting soon';
       banner.classList.toggle('hidden', state.phase !== 'over' && state.phase !== 'lobby');
       updateTier();
       renderMine();
@@ -317,7 +349,7 @@
     function buzz(data) {
       navigator.vibrate?.([200, 100, 200, 100, 300]);
       const overlay = $('#buzz');
-      overlay.textContent = `The wizard sent “${data.spell}” back at you! −${data.penalty}`;
+      overlay.replaceChildren(el('div', {}, el('big', { textContent: '🪃' }), `${data.spell} came back! −${data.penalty}`));
       overlay.classList.remove('hidden');
       setTimeout(() => overlay.classList.add('hidden'), 2200);
     }
@@ -349,7 +381,7 @@
         remove.addEventListener('click', () => { parts.splice(i, 1); renderComposer(); });
         if (p.type === 'text') return el('span', { className: 'chip text' }, p.text, remove);
         const b = block(p.kind, p.id);
-        return el('span', { className: `chip ${p.kind}` }, `${b.emoji} ${b.label}`, remove);
+        return el('span', { className: `chip ${p.kind}` }, emojiSpan(b.emoji), b.label, remove);
       });
       $('#composer').replaceChildren(...chips, draft);
       updateTier();
@@ -360,9 +392,9 @@
       const n = Object.fromEntries(KINDS.map((k) => [k, ps.filter((p) => p.type === 'ingredient' && p.kind === k).length]));
       const text = ps.filter((p) => p.type === 'text').map((p) => p.text).join(' ');
       const things = n.spell + n.asset;
-      if (!ps.length) return { error: 'Tap a block or describe a spell.' };
-      if (!things && !text) return { error: 'Add something to throw, or describe it.' };
-      if (text.length > MAX_TEXT) return { error: `Keep the description under ${MAX_TEXT} characters.` };
+      if (!ps.length) return { error: '' };
+      if (!things && !text) return { error: 'Add a thing to throw' };
+      if (text.length > MAX_TEXT) return { error: `Max ${MAX_TEXT} characters` };
       if (!text && KINDS.every((k) => n[k] <= 1)) return { tier: 'preset' };
       return { tier: things ? 'remix' : 'novel' };
     }
@@ -371,12 +403,10 @@
       const { tier, error } = classify(allParts());
       const line = $('#tier');
       line.className = tier || 'invalid';
-      if (error) {
+      if (error !== undefined) {
         line.textContent = error;
       } else {
-        const [label, why] = TIERS[tier];
-        const offline = tier !== 'preset' && state && !state.forge_online ? ' (the forge is offline right now, so it waits in line)' : '';
-        line.replaceChildren(el('b', { textContent: label }), ` · ${why}${offline}`);
+        line.textContent = TIERS[tier] + (tier !== 'preset' && state && !state.forge_online ? ' · waits' : '');
       }
       updateCast();
     }
@@ -384,9 +414,14 @@
     function updateCast() {
       const left = Math.ceil((cooldownUntil - Date.now()) / 1000);
       const cast = $('#cast');
-      const invalid = !!classify(allParts()).error;
+      const invalid = 'error' in classify(allParts());
       cast.disabled = left > 0 || invalid || state?.phase === 'over';
-      cast.textContent = left > 0 ? `Recharging… ${left}s` : 'Cast';
+      cast.textContent = left > 0 ? `⏳ ${left}s` : '🪄 Cast';
+      const blocked = left > 0 || state?.phase === 'over';
+      for (const tile of document.querySelectorAll('#palette-spell .block')) tile.disabled = blocked;
+      const quick = $('#quick-status');
+      if (left > 0) { quick.className = ''; quick.textContent = `⏳ ${left}s`; }
+      else if (!quick.classList.contains('error')) quick.textContent = '';
     }
     setInterval(updateCast, 500);
 
@@ -406,20 +441,38 @@
     $('#clear').addEventListener('click', () => { parts = []; draft.value = ''; renderComposer(); });
     $('#cast').addEventListener('click', cast);
 
-    async function cast() {
-      if ($('#cast').disabled) return;
-      $('#cast-error').textContent = '';
+    async function send(spellParts, errorLine) {
+      errorLine.textContent = '';
       try {
-        const data = await api('/api/spells', { method: 'POST', body: { parts: allParts() } });
-        parts = [];
-        draft.value = '';
-        renderComposer();
-        applyMe(data);
+        applyMe(await api('/api/spells', { method: 'POST', body: { parts: spellParts } }));
+        return true;
       } catch (err) {
         if (err.status === 401) return forget();
         if (err.data?.retry_after) cooldownUntil = Date.now() + err.data.retry_after * 1000;
-        $('#cast-error').textContent = err.message;
+        errorLine.textContent = err.message;
+        return false;
       }
+    }
+
+    async function cast() {
+      if ($('#cast').disabled) return;
+      if (!(await send(allParts(), $('#cast-error')))) return;
+      parts = [];
+      draft.value = '';
+      renderComposer();
+    }
+
+    // Prebuilt tab: one tap casts a ready-made spell.
+    async function quickCast(id, tile) {
+      const quick = $('#quick-status');
+      quick.className = 'error';
+      if (await send([{ type: 'ingredient', kind: 'spell', id }], quick)) {
+        quick.className = '';
+        tile.classList.remove('sent');
+        void tile.offsetWidth; // restart the animation
+        tile.classList.add('sent');
+      }
+      updateCast();
     }
 
     // ---- palette and my spells ---------------------------------------------------------------
@@ -429,30 +482,24 @@
         const items = catalog[kind === 'spell' ? 'spells' : kind + 's'];
         $(`#palette-${kind}`).replaceChildren(...items.map((item) => {
           const b = block(kind, item.id);
-          const hint = kind === 'spell'
-            ? `“${item.incantation}” · ${block('asset', item.asset).label}, ${block('motion', item.motion).label.toLowerCase()}`
-            : kind === 'motion' ? item.description : null;
-          const button = el('button', { className: `block ${kind}`, type: 'button' }, `${b.emoji} ${b.label}`, hint && el('small', { textContent: hint }));
-          button.addEventListener('click', () => addBlock(kind, item.id));
+          const icon = emojiSpan(b.emoji);
+          if (kind === 'spell') icon.append(el('sub', { textContent: block('motion', item.motion).emoji }));
+          const hint = kind === 'spell' ? `“${item.incantation}”` : kind === 'motion' ? item.description : b.label;
+          const button = el('button', { className: `block ${kind}`, type: 'button', title: hint }, icon, b.label);
+          button.addEventListener('click', () => (kind === 'spell' ? quickCast(item.id, button) : addBlock(kind, item.id)));
           return button;
         }));
       }
     }
 
     function describe(ps) {
-      return ps.map((p) => {
-        if (p.type === 'text') return p.text;
-        const b = block(p.kind, p.id);
-        return `${b.emoji} ${b.label}`;
-      }).join(' · ');
+      return ps.map((p) => (p.type === 'text' ? '🔮' : block(p.kind, p.id).emoji)).join('');
     }
 
     function statusText(r) {
       if (r.status === 'queued') {
-        const wait = r.tier !== 'preset' && state && !state.forge_online ? ' (forge offline)' : '';
-        return r.ahead ? `In line · ${r.ahead} ahead${wait}` : `In line${wait}`;
+        return r.ahead ? `⏳ ${r.ahead} ahead` : '⏳ Next';
       }
-      if (r.status === 'ready' && state?.phase === 'lobby') return 'Ready for dusk';
       return STATUS[r.status] ?? r.status;
     }
 
@@ -460,10 +507,9 @@
       if (!catalog) return;
       const list = [...requests.values()].sort((a, b) => b.created_at - a.created_at).slice(0, 8);
       if (!list.length) return;
-      $('#mine').replaceChildren(...list.map((r) => el('li', {},
-        el('div', { className: 'what', textContent: `${TIERS[r.tier][0].split(' ')[0]} ${describe(r.parts)}` }),
+      $('#mine').replaceChildren(...list.map((r) => el('li', { title: r.spell ? `${r.spell.name} · “${r.spell.incantation}”` : (r.error ?? '') },
+        el('div', { className: 'what' }, describe(r.parts), r.spell && el('small', { textContent: r.spell.name })),
         el('span', { className: `status ${r.status}`, textContent: statusText(r) }),
-        el('div', { className: 'name', textContent: r.spell ? `${r.spell.name} · “${r.spell.incantation}”` : (r.error ?? '') }),
       )));
     }
 

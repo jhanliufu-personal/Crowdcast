@@ -211,8 +211,9 @@ class EngineTest(unittest.TestCase):
         self.engine.report("spawned", request.id)
         return request
 
-    def test_teams_balanced(self):
-        self.assertNotEqual(self.a.team, self.b.team)
+    def test_everyone_plays_alone(self):
+        self.assertNotEqual(self.a.color, self.b.color)
+        self.assertNotIn("team", self.a.to_public())
 
     def test_preset_is_acked_immediately_and_waits_for_round(self):
         headset = collect(self.hub)
@@ -328,13 +329,14 @@ class EngineTest(unittest.TestCase):
         self.engine.report("hit", hit.id)
         self.engine.report("catch", caught.id)
         self.assertEqual(self.engine.cracks, 1)
-        self.assertEqual(self.engine.scores[self.a.team], 10)
+        self.assertEqual(self.a.score, 10)
+        self.assertEqual(self.engine.state()["leaderboard"][0]["name"], self.a.name)
         self.assertEqual(self.engine.charge, 3)
         buzz = collect(self.hub, "audience", self.b.id)
         view = self.engine.host_view()
         self.assertEqual([(r["id"], r["status"]) for r in view["recent"]], [(hit.id, "hit"), (caught.id, "caught")])
         self.engine.report("return", caught.id)
-        self.assertEqual(self.engine.scores[self.b.team], -5)
+        self.assertEqual((self.a.score, self.b.score), (10, -5))  # only the target loses points
         self.assertEqual([d["spell"] for e, d in buzz() if e == "audience:buzz"], ["Thunder Lob"])
         with self.assertRaises(GameError):
             self.engine.report("hit", hit.id)  # no longer in flight
