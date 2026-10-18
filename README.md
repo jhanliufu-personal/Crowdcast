@@ -193,7 +193,7 @@ A mobile-first page served by the game server. No install, no account.
    - *Brewing* – the LLM is forging it (the phone shows a cauldron animation).
    - *Channeling* – their avatar is chanting in the scene.
    - *Result* – **Hit!**, **Caught!**, or **Shielded**, with the spell's name and incantation.
-5. **Cooldown:** a ring timer (default **15 s** per person) to keep things fair and limit LLM usage.
+5. **Cooldown:** a ring timer (default **5 s** per person) to keep things fair and limit LLM usage.
 6. **Getting hit:** if the player returns a spell at you, your phone buzzes (Vibration API where supported) and the screen flashes your team color.
 7. **End screen:** the hatched creature, team results, and the Most Magical Spell award.
 
@@ -224,7 +224,7 @@ The server validates every piece against the catalog (at most 8 pieces and 120 c
 
 The queue is first come, first served within a tier. The engine always takes presets and takes remix and novel requests only when the LLM forge has free capacity, so a preset submitted later still overtakes a novel request waiting for the LLM. A request leaves the queue only when the forge acknowledges it (see [Acknowledgements and the forge contract](#acknowledgements-and-the-forge-contract-llm-harness)). Resolved spells wait in a **ready** stage and are cast when the current act has room (dusk 2, storm 5, midnight 3 spells in the sky at once). Spells cast before the round starts wait in the ready stage for dusk.
 
-Each member gets a 15 s cooldown and can have only one spell in the queue, forging, or ready at a time; this keeps parallel input fair at low to medium traffic. Request statuses: `queued` (with how many are ahead) → `forging` (claimed, still in the queue) → `ready` → `sent` (to the headset) → `cast` (the headset confirmed it) → `hit` / `caught` / `shielded` / `fizzled`, or `failed` / `expired`.
+Each member gets a 5 s cooldown and can have only one spell in the queue, forging, or ready at a time; this keeps parallel input fair at low to medium traffic. Request statuses: `queued` (with how many are ahead) → `forging` (claimed, still in the queue) → `ready` → `sent` (to the headset) → `cast` (the headset confirmed it) → `hit` / `caught` / `shielded` / `fizzled`, or `failed` / `expired`.
 
 The LLM side plugs in at `game/forge.py`; see [the forge contract](#acknowledgements-and-the-forge-contract-llm-harness). `serve.py` connects the harness's forge (`harness/forge.py`); without one, `NotConnectedForge` has zero capacity, so remix and novel requests stay queued.
 
@@ -560,7 +560,7 @@ Generated audio is cached by prompt so repeated narrator lines and common sound 
 
 Audience text goes into an LLM that writes code, so this matters even at a hackathon.
 
-**Today** audience requests are validated against the catalog and rate-limited (15 s cooldown, one pending spell per member), host and headset API calls need the host key, and audience text is never sent to an LLM yet. Patches (`/api/patch`) do run arbitrary JavaScript in every page, so they and the other scene routes only answer the Mac itself or the host key (see [Run it](#current-prototype)); the LLM never writes patches. For the chat box, the LLM can't run code at all; it can only emit the three commands. The guardrails are: tool schemas with enums for `shape` and `animation` and no extra fields; the browser re-validates every command (`cleanSpec` in `index.html`: colors must parse, `size` is clamped to 0.03–3 m, positions must be three finite numbers, unknown fields are dropped); the API key stays in the server process; and the CLI backend runs with no tools or MCP servers. Positions are not yet clamped to the room, the chat box has no rate limit, and there is no moderation step or kill switch.
+**Today** audience requests are validated against the catalog and rate-limited (5 s cooldown, one pending spell per member), host and headset API calls need the host key, and audience text is never sent to an LLM yet. Patches (`/api/patch`) do run arbitrary JavaScript in every page, so they and the other scene routes only answer the Mac itself or the host key (see [Run it](#current-prototype)); the LLM never writes patches. For the chat box, the LLM can't run code at all; it can only emit the three commands. The guardrails are: tool schemas with enums for `shape` and `animation` and no extra fields; the browser re-validates every command (`cleanSpec` in `index.html`: colors must parse, `size` is clamped to 0.03–3 m, positions must be three finite numbers, unknown fields are dropped); the API key stays in the server process; and the CLI backend runs with no tools or MCP servers. Positions are not yet clamped to the room, the chat box has no rate limit, and there is no moderation step or kill switch.
 
 **Generated code** (planned)
 

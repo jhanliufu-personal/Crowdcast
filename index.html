@@ -11,16 +11,6 @@
       background: rgba(0, 0, 0, 0.55); padding: 8px 10px; border-radius: 6px; pointer-events: none;
     }
     #info a { color: #9cf; pointer-events: auto; }
-    #chat {
-      position: absolute; left: 10px; bottom: 60px; width: 340px; color: #eee; font-size: 13px;
-      background: rgba(0, 0, 0, 0.6); border-radius: 8px; padding: 8px;
-    }
-    #chat-log { max-height: 220px; overflow-y: auto; margin-bottom: 6px; line-height: 1.4; }
-    #chat-log .user { color: #fff; font-weight: 600; margin-top: 6px; }
-    #chat-log .assistant { color: #cde; }
-    #chat-log .meta { color: #888; font-size: 11px; }
-    #chat-log .error { color: #f99; }
-    #chat-input { width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 5px; border: 1px solid #555; background: #222; color: #eee; }
     body.viewer .headset-only, body.headset .viewer-only { display: none; }
     #info .dim { color: #999; }
   </style>
@@ -48,10 +38,6 @@
       by <a href="https://sketchfab.com/Pasha." target="_blank">Pasha</a>, CC-BY-4.0</div>
   </div>
 
-  <div id="chat">
-    <div id="chat-log"><div class="meta">Ask Claude to edit the scene, e.g. "put three blue spheres in front of me", "make the spheres green", "remove them".</div></div>
-    <form id="chat-form"><input id="chat-input" autocomplete="off" placeholder="Edit the scene…" /></form>
-  </div>
 
   <script type="module">
     import * as THREE from 'three';
@@ -152,7 +138,7 @@
     }
     controls.update();
 
-    // Editable objects: everything you can add, change or remove at runtime (by trigger, key or chat) lives here.
+    // Editable objects: everything you can add, change or remove at runtime (by trigger, key or a scene edit) lives here.
     // Each object is a named group in the scene graph plus a small spec describing it:
     //   { name, shape, color, size, position: [x, y, z], animation, glow }
     // The spec is also what gets sent to the LLM as "scene state", and what its tool calls edit.
@@ -343,11 +329,8 @@
       if (e.code === 'KeyB' && !typing(e) && !renderer.xr.isPresenting) spawnInFrontOf(head, 1.0);
     });
 
-    // Chat box: send the message plus the current scene state to serve.py, which asks Claude for tool calls
-    // (add_object / update_object / remove_object). The server sends those to every page as an edit (see Live sync).
-    const chatLog = document.getElementById('chat-log');
-    const chatForm = document.getElementById('chat-form');
-    const chatInput = document.getElementById('chat-input');
+    // Scene state and commands (add_object / update_object / remove_object): the server's scene edits arrive as
+    // commands (see Live sync), and POST /api/chat sends sceneState() to Claude with a message.
     const round = (v) => Math.round(v * 100) / 100;
 
     function sceneState() {
@@ -375,42 +358,6 @@
       return done;
     }
 
-    function logChat(role, text) {
-      const line = document.createElement('div');
-      line.className = role;
-      line.textContent = text;
-      chatLog.appendChild(line);
-      chatLog.scrollTop = chatLog.scrollHeight;
-      return line;
-    }
-
-    chatForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const message = chatInput.value.trim();
-      if (!message) return;
-      chatInput.value = '';
-      logChat('user', message);
-      const pending = logChat('meta', 'thinking…');
-      const started = performance.now();
-      try {
-        const res = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Host-Key': HOST_KEY },
-          body: JSON.stringify({ message, scene: sceneState() }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || res.statusText);
-        // Not applied here: the server sends the commands to every page, this one included.
-        const done = data.commands.map((c) => `${c.name.replace('_object', '')} ${c.input.name ?? ''}`.trim());
-        const total = Math.round(performance.now() - started);
-        pending.remove();
-        logChat('assistant', data.text || done.join(', ') || '(no changes)');
-        logChat('meta', `${done.join(', ') || 'no tool calls'} · model ${data.ms} ms, total ${total} ms · ${data.model}`);
-      } catch (err) {
-        pending.remove();
-        logChat('error', `Error: ${err.message}`);
-      }
-    });
     // For testing edits without the LLM from the console, and seeing exactly what the LLM is sent.
     Object.assign(window, { applyCommands, sceneState });
 
@@ -423,7 +370,12 @@
     function placeEgg(model) {
       model.updateMatrixWorld(true);
       const box = egg.userData.box.makeEmpty();
-      model.traverse((o) => { if (o.isMesh && /^egg/i.test(o.name)) box.expandByObject(o); });
+      egg.userData.meshes = [];
+      model.traverse((o) => {
+        if (!o.isMesh || !/^egg/i.test(o.name)) return;
+        box.expandByObject(o);
+        egg.userData.meshes.push(o); // hidden while the egg is broken
+      });
       if (box.isEmpty()) box.setFromCenterAndSize(new THREE.Vector3(0, 1.2, 0), new THREE.Vector3(0.6, 0.8, 0.6));
       box.getCenter(egg.position);
     }
@@ -474,6 +426,17 @@
         worldLoaded();
       }
     );
+
+    // The game state, polled for the HUD and the egg. Listeners get every snapshot.
+    const gameListeners = [];
+    setInterval(async () => {
+      try {
+        const res = await fetch('/api/game/state');
+        if (!res.ok) return;
+        const state = await res.json();
+        for (const fn of gameListeners) fn(state);
+      } catch {} // the server is restarting: keep the last values
+    }, 400);
 
     // HUD (headset only): the egg's health and the player's, from the game state. A small glass panel that hangs
     // just below the line of sight. updateHud(dt) runs every frame (in VR too), easing the bars toward new values.
@@ -679,11 +642,7 @@
         }
       };
 
-      setInterval(async () => {
-        try {
-          const res = await fetch('/api/game/state');
-          if (!res.ok) return;
-          const state = await res.json();
+      gameListeners.push((state) => {
           const eggLeft = state.max_cracks - state.cracks;
           if (eggLeft < game.eggLeft) shown.eggFlash = 1;
           if (state.player.hp < game.hp - 0.5) shown.lostHold = 0.6; // hold the lost health a moment, then drain it
@@ -694,8 +653,149 @@
             shown.hp = shown.lost = game.hp;
             shown.eggFlash = 0;
           }
-        } catch {} // the server is restarting: keep the last values
-      }, 400);
+      });
+    }
+
+    // When the egg breaks (the round's outcome is "broken"): it splinters into shards of shell, gold and emerald,
+    // and the view fades to dark with a frowny face. Everything comes back when a new round or a reset starts.
+    let updateEggBreak = null;
+    {
+      const SHARDS = 70;
+      const GRAVITY = 9.8;
+      const shards = new THREE.Group();
+      shards.name = 'egg-shards'; // the same on every page: viewers break their own copy at the same moment
+      scene.add(shards);
+      const shardMaterials = [
+        new THREE.MeshStandardMaterial({ color: '#eef1f7', roughness: 0.35, metalness: 0.05, side: THREE.DoubleSide }),
+        new THREE.MeshStandardMaterial({ color: '#d9e6e0', roughness: 0.35, metalness: 0.05, side: THREE.DoubleSide }),
+        new THREE.MeshStandardMaterial({ color: '#c9a24f', roughness: 0.3, metalness: 0.85 }),
+        new THREE.MeshStandardMaterial({ color: '#2a9d6a', roughness: 0.25, metalness: 0.2 }),
+      ];
+      const shardGeometries = [new THREE.TetrahedronGeometry(1), new THREE.OctahedronGeometry(1), new THREE.IcosahedronGeometry(1)];
+
+      // Darkness: a black shell around the eyes, with the face and a line of text in front of it.
+      const dark = new THREE.Mesh(
+        new THREE.SphereGeometry(0.5, 24, 12),
+        new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide, transparent: true, opacity: 0, depthTest: false, depthWrite: false }),
+      );
+      dark.renderOrder = 1990;
+      dark.visible = false;
+      camera.add(dark);
+      const faceCanvas = document.createElement('canvas');
+      faceCanvas.width = 512;
+      faceCanvas.height = 512;
+      const fg = faceCanvas.getContext('2d');
+      fg.textAlign = 'center';
+      fg.textBaseline = 'middle';
+      fg.font = '300px "Apple Color Emoji", "Noto Color Emoji", "Segoe UI Emoji", sans-serif';
+      fg.fillText('😞', 256, 210);
+      fg.font = '600 44px system-ui, -apple-system, sans-serif';
+      fg.fillStyle = '#f6e3a6';
+      fg.fillText('The egg broke', 256, 440);
+      const faceTexture = new THREE.CanvasTexture(faceCanvas);
+      faceTexture.colorSpace = THREE.SRGBColorSpace;
+      const face = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.3, 0.3),
+        new THREE.MeshBasicMaterial({ map: faceTexture, transparent: true, opacity: 0, depthTest: false, depthWrite: false, toneMapped: false }),
+      );
+      face.position.set(0, 0.02, -0.45);
+      face.renderOrder = 1991;
+      face.visible = false;
+      camera.add(face);
+
+      let broken = false, since = 0, darkness = 0;
+      let ground = () => 0; // floor height at a distance from the egg's center line
+
+      // The dais is round: sample its height outward from the egg once, rather than raycasting every frame.
+      function measureGround(box) {
+        const center = box.getCenter(new THREE.Vector3());
+        const heights = [];
+        const ray = new THREE.Raycaster();
+        const down = new THREE.Vector3(0, -1, 0);
+        for (let r = 0; r <= 6; r += 0.2) {
+          ray.set(new THREE.Vector3(center.x + r, box.min.y + 0.5, center.z), down);
+          const hit = worldModel ? ray.intersectObject(worldModel, true).find((h) => !egg.userData.meshes?.includes(h.object)) : null;
+          heights.push(hit ? hit.point.y : 0);
+        }
+        ground = (dist) => heights[Math.min(heights.length - 1, Math.round(dist / 0.2))] ?? 0;
+      }
+
+      function shatter() {
+        const box = egg.userData.box;
+        const center = box.getCenter(new THREE.Vector3());
+        const size = box.getSize(new THREE.Vector3());
+        measureGround(box);
+        for (const mesh of egg.userData.meshes ?? []) mesh.visible = false;
+        for (let i = 0; i < SHARDS; i++) {
+          const kind = i < SHARDS * 0.7 ? i % 2 : i < SHARDS * 0.9 ? 2 : 3; // mostly shell, some gold, a few emerald
+          const shard = new THREE.Mesh(shardGeometries[i % shardGeometries.length], shardMaterials[kind]);
+          const dir = new THREE.Vector3().randomDirection();
+          // Start on the shell (an ellipsoid inside the egg's box), flattened like a piece of shell.
+          shard.position.set(center.x + dir.x * size.x * 0.45, center.y + dir.y * size.y * 0.45, center.z + dir.z * size.z * 0.45);
+          const s = kind < 2 ? 0.06 + Math.random() * 0.08 : 0.03 + Math.random() * 0.03;
+          shard.scale.set(s, s * (kind < 2 ? 0.25 : 1), s * (0.6 + Math.random() * 0.6));
+          shard.rotation.set(Math.random() * 6, Math.random() * 6, Math.random() * 6);
+          const outward = new THREE.Vector3(dir.x, 0, dir.z).normalize().multiplyScalar(1.2 + Math.random() * 2.8);
+          shard.userData = {
+            velocity: outward.add(new THREE.Vector3(0, 1.5 + Math.random() * 3.5, 0)),
+            spin: new THREE.Vector3().randomDirection().multiplyScalar(4 + Math.random() * 10),
+            center,
+            resting: false,
+          };
+          shards.add(shard);
+        }
+        pulseAll(1, 300);
+      }
+
+      function restore() {
+        for (const mesh of egg.userData.meshes ?? []) mesh.visible = true;
+        shards.clear();
+      }
+
+      function pulseAll(intensity, ms) {
+        for (const source of renderer.xr.getSession()?.inputSources ?? []) source.gamepad?.hapticActuators?.[0]?.pulse?.(intensity, ms);
+      }
+
+      gameListeners.push((state) => {
+        const now = state.outcome === 'broken';
+        if (now === broken) return;
+        broken = now;
+        since = 0;
+        if (broken) shatter();
+        else restore();
+      });
+
+      updateEggBreak = (dt) => {
+        since += dt;
+        for (const shard of shards.children) {
+          const u = shard.userData;
+          if (u.resting) continue;
+          u.velocity.y -= GRAVITY * dt;
+          shard.position.addScaledVector(u.velocity, dt);
+          shard.rotation.x += u.spin.x * dt;
+          shard.rotation.y += u.spin.y * dt;
+          shard.rotation.z += u.spin.z * dt;
+          const floor = ground(Math.hypot(shard.position.x - u.center.x, shard.position.z - u.center.z)) + 0.01;
+          if (shard.position.y < floor) {
+            shard.position.y = floor;
+            if (Math.abs(u.velocity.y) < 0.6) {
+              u.resting = true;
+            } else {
+              u.velocity.y *= -0.35; // bounce, losing most of the speed
+              u.velocity.x *= 0.6;
+              u.velocity.z *= 0.6;
+              u.spin.multiplyScalar(0.5);
+            }
+          }
+        }
+        // Dark after a moment, so the splinters are seen first; light again quickly on a reset.
+        const target = broken && since > 1.2 ? 1 : 0;
+        darkness += (target - darkness) * Math.min(1, dt * (target ? 1.5 : 4));
+        if (darkness < 0.002 && !target) darkness = 0;
+        dark.visible = face.visible = darkness > 0;
+        dark.material.opacity = 0.88 * darkness;
+        face.material.opacity = darkness;
+      };
     }
 
     // Desktop keyboard movement
@@ -878,8 +978,8 @@
     //   ctx.isViewer             true on viewers: patches run there too, for looks, but the headset's state wins, so
     //                            skip side effects there (like adding objects or sending edits)
     //   ctx.scene, ctx.camera (what this page renders from), ctx.rig (what locomotion moves), ctx.controllers,
-    //   ctx.renderer, ctx.world() (the room model), ctx.addObject / updateObject / removeObject (the chat box's objects)
-    //   ctx.makeShape(shape, material) one of the chat box's shapes, 1 m across
+    //   ctx.renderer, ctx.world() (the room model), ctx.addObject / updateObject / removeObject (the editable objects)
+    //   ctx.makeShape(shape, material) one of the editable objects' shapes, 1 m across
     //   ctx.report(message)      the headset sends a game message to the server ({type, ...}; the harness's spell
     //                            runtime reports spell outcomes this way); does nothing on viewers
     // Returning a function from the code also registers it as cleanup.
@@ -949,7 +1049,7 @@
       }
     }
 
-    // The headset's scene state, streamed to the server: the chat box's scene state, plus the scene graph.
+    // The headset's scene state, streamed to the server: sceneState(), plus the scene graph.
     const r3 = (v) => Math.round(v * 1000) / 1000;
     const ONE = new THREE.Vector3(1, 1, 1);
     function describe(o, depth = 0) {
@@ -964,7 +1064,7 @@
         node.material = m.color ? `${m.type} #${m.color.getHexString()}` : m.type;
       }
       if (o.isLight) node.light = { color: `#${o.color.getHexString()}`, intensity: r3(o.intensity) };
-      // The room model and the chat box's objects are summarized rather than listed part by part.
+      // The room model and the editable objects are summarized rather than listed part by part.
       if (o.userData.summary) node.summary = o.userData.summary;
       else if (o.userData.spec) node.spec = o.userData.spec;
       else if (o.children.length) node.children = depth < 5 ? o.children.slice(0, 40).map((c) => describe(c, depth + 1)) : `${o.children.length} hidden`;
@@ -1173,6 +1273,7 @@
       animateEditables(t);
       runPatches(dt, t);
       updateHud?.(dt);
+      updateEggBreak?.(dt);
       if (ROLE === 'viewer') {
         applyHeadsetState(ease); // after patches, so the headset's state wins
         updateViewerCamera();
